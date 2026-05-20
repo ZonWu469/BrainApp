@@ -1,0 +1,74 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="BrainApp.Desktop.LoadingWindow"
+        Title="BrainApp — Loading"
+        Width="420" Height="280"
+        WindowStartupLocation="CenterScreen"
+        CanResize="False"
+        SystemDecorations="BorderOnly">
+
+  <Border Background="#1E1E2E" CornerRadius="12" Padding="32">
+    <StackPanel Spacing="20" HorizontalAlignment="Center" VerticalAlignment="Center">
+
+      <!-- App logo / title -->
+      <StackPanel Spacing="4" HorizontalAlignment="Center">
+        <TextBlock Text="BrainApp"
+                   FontSize="28" FontWeight="Bold"
+                   Foreground="#7C3AED"
+                   HorizontalAlignment="Center"/>
+        <TextBlock Text="Local Knowledge Base"
+                   FontSize="13"
+                   Foreground="#6B7280"
+                   HorizontalAlignment="Center"/>
+      </StackPanel>
+
+      <!-- Progress indicator -->
+      <StackPanel Spacing="8" HorizontalAlignment="Center" Width="300">
+        <ProgressBar IsIndeterminate="True"
+                     Height="4"
+                     Foreground="#7C3AED"
+                     Background="#374151"/>
+        <TextBlock x:Name="StatusText"
+                   Text="Initializing..."
+                   FontSize="12"
+                   Foreground="#9CA3AF"
+                   HorizontalAlignment="Center"
+                   TextWrapping="Wrap"
+                   TextAlignment="Center"/>
+      </StackPanel>
+
+      <!-- Model info -->
+      <Border Background="#2D2D3A" CornerRadius="8" Padding="16" Width="320">
+        <StackPanel Spacing="6">
+          <StackPanel Orientation="Horizontal" Spacing="8">
+            <Ellipse Width="8" Height="8" Fill="#10B981" VerticalAlignment="Center"/>
+            <TextBlock x:Name="ModelNameText" Text="Model: —"
+                       FontSize="11" Foreground="#D1D5DB"
+                       VerticalAlignment="Center"/>
+          </StackPanel>
+          <StackPanel Orientation="Horizontal" Spacing="8">
+            <Ellipse Width="8" Height="8" Fill="#6B7280" VerticalAlignment="Center"/>
+            <TextBlock x:Name="ModelSizeText" Text="Size: —"
+                       FontSize="11" Foreground="#9CA3AF"
+                       VerticalAlignment="Center"/>
+          </StackPanel>
+          <StackPanel Orientation="Horizontal" Spacing="8">
+            <Ellipse Width="8" Height="8" Fill="#6B7280" VerticalAlignment="Center"/>
+            <TextBlock Text="Context: 8192" FontSize="11" Foreground="#9CA3AF"
+                       VerticalAlignment="Center"/>
+          </StackPanel>
+        </StackPanel>
+      </Border>
+
+      <!-- Tip -->
+      <TextBlock Text="Tip: First load reads model from disk (~2–8s). Subsequent starts are faster."
+                 FontSize="10"
+                 Foreground="#4B5563"
+                 HorizontalAlignment="Center"
+                 TextWrapping="Wrap"
+                 TextAlignment="Center"
+                 MaxWidth="320"/>
+
+    </StackPanel>
+  </Border>
+</Window>

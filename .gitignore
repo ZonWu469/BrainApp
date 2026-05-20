@@ -1,0 +1,7 @@
+.vs/
+src/BrainApp.Api/bin/
+src/BrainApp.Api/obj/
+src/BrainApp.Core/bin/
+src/BrainApp.Core/obj/
+src/BrainApp.Desktop/obj/
+tests/BrainApp.Tests/obj/

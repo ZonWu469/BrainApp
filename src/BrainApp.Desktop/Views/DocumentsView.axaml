@@ -1,0 +1,139 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             x:Class="BrainApp.Desktop.Views.DocumentsView">
+
+  <Border Background="#1E1E2E">
+    <Grid RowDefinitions="Auto,*,Auto">
+      <!-- Header -->
+      <Border Grid.Row="0" Background="#252535" Padding="12,10">
+        <Grid ColumnDefinitions="*,Auto">
+          <StackPanel Orientation="Horizontal" Spacing="8">
+            <TextBlock Text="Documents" FontSize="14" FontWeight="SemiBold"
+                       Foreground="#E5E7EB" VerticalAlignment="Center"/>
+            <Border Background="#374151" CornerRadius="8" Padding="6,2">
+              <TextBlock Text="{Binding TotalDocuments}" FontSize="11" Foreground="#9CA3AF"/>
+            </Border>
+          </StackPanel>
+          <Button Grid.Column="1" x:Name="AddDocsButton" Click="OnAddDocsClick"
+                  Background="#7C3AED" Padding="8,4">
+            <StackPanel Orientation="Horizontal" Spacing="4">
+              <TextBlock Text="+" FontSize="14" Foreground="White" FontWeight="Bold"/>
+              <TextBlock Text="Add" FontSize="12" Foreground="White"/>
+            </StackPanel>
+          </Button>
+        </Grid>
+      </Border>
+
+      <!-- Document list -->
+      <ScrollViewer Grid.Row="1" Padding="8">
+        <ItemsControl x:Name="DocumentList" ItemsSource="{Binding Documents}">
+          <ItemsControl.ItemTemplate>
+            <DataTemplate>
+              <Border Margin="0,2" Padding="10,8" CornerRadius="6"
+                      Background="#252535">
+                <Grid RowDefinitions="Auto,Auto,Auto">
+                  <!-- Filename + type icon -->
+                  <StackPanel Orientation="Horizontal" Spacing="6">
+                    <Border Background="#374151" CornerRadius="4" Padding="4,2"
+                            VerticalAlignment="Center">
+                      <TextBlock Text="{Binding FileType}"
+                                 FontSize="10" Foreground="#9CA3AF"
+                                 Width="20" TextAlignment="Center"/>
+                    </Border>
+                    <TextBlock Text="{Binding FileName}" FontSize="12"
+                               Foreground="#F9FAFB" VerticalAlignment="Center"
+                               TextTrimming="CharacterEllipsis"
+                               MaxWidth="180"/>
+                  </StackPanel>
+
+                  <!-- Size + chunks -->
+                  <StackPanel Grid.Row="1" Orientation="Horizontal" Spacing="4"
+                              Margin="26,2,0,0">
+                    <TextBlock Text="{Binding FileSize}" FontSize="10"
+                               Foreground="#6B7280"/>
+                    <TextBlock Text="·" FontSize="10" Foreground="#4B5563"/>
+                    <TextBlock Text="{Binding ChunkCount, StringFormat='{}{0} chunks'}"
+                               FontSize="10" Foreground="#6B7280"/>
+                  </StackPanel>
+
+                  <!-- Status + actions -->
+                  <Grid Grid.Row="2" ColumnDefinitions="*,Auto" Margin="26,4,0,0">
+                    <!-- Status badge -->
+                    <StackPanel Orientation="Horizontal" Spacing="4">
+                      <Ellipse Width="6" Height="6"
+                               Fill="#10B981"
+                               VerticalAlignment="Center"/>
+                      <TextBlock Text="{Binding Status}" FontSize="10"
+                                 Foreground="#9CA3AF" VerticalAlignment="Center"/>
+                    </StackPanel>
+
+                    <!-- Delete button (hidden while indexing) -->
+                    <Button Grid.Column="1" Padding="4" Background="Transparent"
+                            IsVisible="{Binding !IsIngesting}"
+                            Command="{Binding #DocumentList.DataContext.DeleteDocumentCommand}"
+                            CommandParameter="{Binding}">
+                      <TextBlock Text="X" FontSize="10" Foreground="#6B7280"/>
+                    </Button>
+                    <!-- Cancel button (visible only while indexing) -->
+                    <Button Grid.Column="1" Padding="4" Background="Transparent"
+                            IsVisible="{Binding IsIngesting}"
+                            Command="{Binding CancelCommand}">
+                      <TextBlock Text="✕" FontSize="10" Foreground="#EF4444"/>
+                    </Button>
+                  </Grid>
+                </Grid>
+              </Border>
+            </DataTemplate>
+          </ItemsControl.ItemTemplate>
+        </ItemsControl>
+      </ScrollViewer>
+
+      <!-- Empty state -->
+      <StackPanel Grid.Row="1"
+                  HorizontalAlignment="Center" VerticalAlignment="Center"
+                  Spacing="8"
+                  IsVisible="{Binding !Documents.Count}">
+        <TextBlock Text="No documents yet" FontSize="13"
+                   Foreground="#6B7280" HorizontalAlignment="Center"/>
+        <TextBlock Text="Click + Add docs or drag files here" FontSize="11"
+                   Foreground="#4B5563" HorizontalAlignment="Center"/>
+      </StackPanel>
+
+      <!-- Bottom: Progress + Reindex button -->
+      <Border Grid.Row="2" Background="#252535" Padding="12,10">
+        <StackPanel Spacing="6">
+          <!-- Progress panel (visible only during ingestion) -->
+          <StackPanel Spacing="4" IsVisible="{Binding IsIngesting}">
+            <Grid ColumnDefinitions="*,Auto">
+              <TextBlock Grid.Column="0" Text="{Binding ProgressOverallText}"
+                         FontSize="11" Foreground="#E5E7EB"
+                         VerticalAlignment="Center"/>
+              <TextBlock Grid.Column="1"
+                         Text="{Binding ProgressPercent, StringFormat='{}{0:0}%'}"
+                         FontSize="11" Foreground="#9CA3AF"
+                         VerticalAlignment="Center"/>
+            </Grid>
+            <ProgressBar Minimum="0" Maximum="100"
+                         Value="{Binding ProgressPercent}"
+                         Height="6"
+                         Foreground="#7C3AED"
+                         Background="#374151"/>
+            <TextBlock Text="{Binding ProgressDetailText}"
+                       FontSize="10" Foreground="#6B7280"
+                       TextTrimming="CharacterEllipsis"/>
+            <Button Content="Cancel"
+                    Command="{Binding CancelIngestionCommand}"
+                    Background="#EF4444" Foreground="White"
+                    Padding="8,4" HorizontalAlignment="Stretch"/>
+          </StackPanel>
+
+          <Button x:Name="ReindexButton" Content="Reindex all"
+                  Command="{Binding ReindexAllCommand}"
+                  Background="#374151" Foreground="#9CA3AF"
+                  Padding="8,6" HorizontalAlignment="Stretch"
+                  IsEnabled="{Binding !IsIngesting}"/>
+        </StackPanel>
+      </Border>
+    </Grid>
+  </Border>
+</UserControl>

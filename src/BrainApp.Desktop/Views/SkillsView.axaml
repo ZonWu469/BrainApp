@@ -1,0 +1,61 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             x:Class="BrainApp.Desktop.Views.SkillsView">
+
+  <Border Background="#1E1E2E">
+    <Grid RowDefinitions="Auto,*,Auto">
+      <Border Grid.Row="0" Background="#252535" Padding="12,10">
+        <Grid ColumnDefinitions="*,Auto">
+          <StackPanel Orientation="Horizontal" Spacing="8">
+            <TextBlock Text="Skills" FontSize="14" FontWeight="SemiBold"
+                       Foreground="#E5E7EB" VerticalAlignment="Center"/>
+            <Border Background="#374151" CornerRadius="8" Padding="6,2">
+              <TextBlock Text="{Binding Skills.Count}" FontSize="11" Foreground="#9CA3AF"/>
+            </Border>
+          </StackPanel>
+          <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="6">
+            <Button Command="{Binding RefreshSkillsCommand}"
+                    Background="#374151" Padding="8,4">
+              <TextBlock Text="Refresh" FontSize="11" Foreground="#E5E7EB"/>
+            </Button>
+            <Button Command="{Binding OpenSkillsFolderCommand}"
+                    Background="#7C3AED" Padding="8,4">
+              <TextBlock Text="Folder" FontSize="11" Foreground="White"/>
+            </Button>
+          </StackPanel>
+        </Grid>
+      </Border>
+
+      <ScrollViewer Grid.Row="1" Padding="8">
+        <ItemsControl x:Name="SkillsList" ItemsSource="{Binding Skills}">
+          <ItemsControl.ItemTemplate>
+            <DataTemplate>
+              <Border Margin="0,2" Padding="10,8" CornerRadius="6" Background="#252535">
+                <Grid RowDefinitions="Auto,Auto,Auto,Auto">
+                  <Grid ColumnDefinitions="*,Auto">
+                    <TextBlock Text="{Binding DisplayName}" FontSize="12" FontWeight="SemiBold"
+                               Foreground="#F9FAFB"/>
+                    <CheckBox Grid.Column="1"
+                              IsChecked="{Binding IsEnabled}"
+                              IsEnabled="{Binding IsValid}"
+                              IsCheckedChanged="OnEnableCheckBoxChanged"/>
+                  </Grid>
+                  <TextBlock Grid.Row="1" Text="{Binding FileName}" FontSize="10"
+                             Foreground="#6B7280" Margin="0,2,0,0"/>
+                  <TextBlock Grid.Row="2" Text="{Binding Description}" FontSize="11"
+                             Foreground="#9CA3AF" TextWrapping="Wrap" Margin="0,4,0,0"/>
+                  <TextBlock Grid.Row="3" Text="{Binding CompileError}" FontSize="10"
+                             Foreground="#F87171" TextWrapping="Wrap" Margin="0,2,0,0"/>
+                </Grid>
+              </Border>
+            </DataTemplate>
+          </ItemsControl.ItemTemplate>
+        </ItemsControl>
+      </ScrollViewer>
+
+      <Border Grid.Row="2" Background="#252535" Padding="12,8">
+        <TextBlock Text="{Binding StatusText}" FontSize="10" Foreground="#6B7280"/>
+      </Border>
+    </Grid>
+  </Border>
+</UserControl>

@@ -1,0 +1,174 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="BrainApp.Desktop.Views.SettingsWindow"
+        Title="Settings"
+        Width="600" Height="500"
+        WindowStartupLocation="CenterScreen"
+        CanResize="False">
+
+  <Border Background="#1E1E2E">
+    <TabControl>
+      <!-- Model tab -->
+      <TabItem Header="Model">
+        <ScrollViewer Padding="16">
+          <StackPanel Spacing="16">
+            <TextBlock Text="Model Configuration" FontSize="16" FontWeight="SemiBold"
+                       Foreground="#F9FAFB"/>
+
+            <StackPanel Spacing="8">
+              <TextBlock Text="Chat model file" FontSize="12" Foreground="#9CA3AF"/>
+              <TextBox Text="{Binding ChatModelFile}" FontSize="12" Padding="8"/>
+            </StackPanel>
+
+            <StackPanel Spacing="8">
+              <TextBlock Text="Embedding model file" FontSize="12" Foreground="#9CA3AF"/>
+              <TextBox Text="{Binding EmbeddingModelFile}" FontSize="12" Padding="8"/>
+            </StackPanel>
+
+            <StackPanel Spacing="8">
+              <TextBlock Text="Models folder" FontSize="12" Foreground="#9CA3AF"/>
+              <TextBox Text="{Binding ModelsFolder}" FontSize="12" Padding="8"/>
+            </StackPanel>
+
+            <Grid ColumnDefinitions="*,*" RowDefinitions="Auto,Auto">
+              <StackPanel Grid.Column="0" Spacing="8" Margin="0,0,8,0">
+                <TextBlock Text="Context size" FontSize="12" Foreground="#9CA3AF"/>
+                <NumericUpDown Value="{Binding ContextSize}" Minimum="1024" Maximum="131072"
+                               Increment="1024" FontSize="12" Padding="8"/>
+              </StackPanel>
+              <StackPanel Grid.Column="1" Spacing="8">
+                <TextBlock Text="GPU layers (0=CPU)" FontSize="12" Foreground="#9CA3AF"/>
+                <Slider Value="{Binding GpuLayerCount}" Minimum="0" Maximum="99"
+                        IsSnapToTickEnabled="True" TickFrequency="1"/>
+                <TextBlock Text="{Binding GpuLayerCount, StringFormat='{}{0} layers'}"
+                           FontSize="10" Foreground="#6B7280"/>
+              </StackPanel>
+            </Grid>
+
+            <!-- Model info card -->
+            <Border Background="#252535" CornerRadius="8" Padding="12">
+              <TextBlock Text="{Binding ModelInfoText}" FontSize="11" Foreground="#6B7280"
+                         TextWrapping="Wrap"/>
+            </Border>
+
+            <!-- Actions -->
+            <StackPanel Orientation="Horizontal" Spacing="8">
+              <Button Content="Test model" Command="{Binding TestModelCommand}"
+                      IsEnabled="{Binding !IsTesting}"
+                      Background="#374151" Foreground="#E5E7EB" Padding="16,8"/>
+              <Button Content="Reload model" Command="{Binding ReloadModelCommand}"
+                      IsEnabled="{Binding !IsReloading}"
+                      Background="#7C3AED" Foreground="White" Padding="16,8"/>
+            </StackPanel>
+
+            <TextBlock Text="{Binding TestResultText}" FontSize="11" Foreground="#9CA3AF"
+                       TextWrapping="Wrap"/>
+          </StackPanel>
+        </ScrollViewer>
+      </TabItem>
+
+      <!-- Cache tab -->
+      <TabItem Header="Cache">
+        <ScrollViewer Padding="16">
+          <StackPanel Spacing="16">
+            <TextBlock Text="Cache Settings" FontSize="16" FontWeight="SemiBold"
+                       Foreground="#F9FAFB"/>
+
+            <StackPanel Orientation="Horizontal" Spacing="16">
+              <CheckBox Content="Enable embedding cache"
+                        IsChecked="{Binding EnableEmbeddingCache}"/>
+              <CheckBox Content="Enable query cache"
+                        IsChecked="{Binding EnableQueryCache}"/>
+            </StackPanel>
+
+            <StackPanel Spacing="8">
+              <TextBlock Text="Embedding TTL (minutes)" FontSize="12" Foreground="#9CA3AF"/>
+              <Slider Value="{Binding EmbeddingTtlMinutes}" Minimum="1" Maximum="10080"
+                      IsSnapToTickEnabled="True" TickFrequency="60"/>
+              <TextBlock Text="{Binding EmbeddingTtlMinutes, StringFormat='{}{0} min'}"
+                         FontSize="10" Foreground="#6B7280"/>
+            </StackPanel>
+
+            <Button Content="Clear all caches"
+                    Background="#EF4444" Foreground="White" Padding="16,8"
+                    HorizontalAlignment="Left"/>
+          </StackPanel>
+        </ScrollViewer>
+      </TabItem>
+
+      <!-- Storage tab -->
+      <TabItem Header="Storage">
+        <ScrollViewer Padding="16">
+          <StackPanel Spacing="16">
+            <TextBlock Text="Storage Settings" FontSize="16" FontWeight="SemiBold"
+                       Foreground="#F9FAFB"/>
+
+            <StackPanel Spacing="8">
+              <TextBlock Text="App data folder" FontSize="12" Foreground="#9CA3AF"/>
+              <TextBox Text="{Binding AppDataFolder}" FontSize="12" Padding="8"
+                       IsReadOnly="True" Background="#252535"/>
+            </StackPanel>
+
+            <StackPanel Spacing="8">
+              <TextBlock Text="Max file size (MB)" FontSize="12" Foreground="#9CA3AF"/>
+              <NumericUpDown Value="{Binding MaxFileSizeMb}" Minimum="1" Maximum="500"
+                             Increment="1" FontSize="12" Padding="8"/>
+            </StackPanel>
+          </StackPanel>
+        </ScrollViewer>
+      </TabItem>
+
+      <!-- API tab -->
+      <TabItem Header="API">
+        <ScrollViewer Padding="16">
+          <StackPanel Spacing="16">
+            <TextBlock Text="API Settings" FontSize="16" FontWeight="SemiBold"
+                       Foreground="#F9FAFB"/>
+
+            <CheckBox Content="Enable API server"
+                      IsChecked="{Binding ApiEnabled}"/>
+
+            <StackPanel Spacing="8">
+              <TextBlock Text="Port" FontSize="12" Foreground="#9CA3AF"/>
+              <NumericUpDown Value="{Binding ApiPort}" Minimum="1024" Maximum="65535"
+                             Increment="1" FontSize="12" Padding="8"/>
+            </StackPanel>
+
+            <StackPanel Spacing="8">
+              <TextBlock Text="API key" FontSize="12" Foreground="#9CA3AF"/>
+              <TextBox Text="{Binding ApiKey}" FontSize="12" Padding="8"/>
+            </StackPanel>
+
+            <CheckBox Content="Enable Swagger UI"
+                      IsChecked="{Binding SwaggerEnabled}"/>
+          </StackPanel>
+        </ScrollViewer>
+      </TabItem>
+
+      <!-- About tab -->
+      <TabItem Header="About">
+        <ScrollViewer Padding="16">
+          <StackPanel Spacing="16" HorizontalAlignment="Center">
+            <TextBlock Text="BrainApp" FontSize="24" FontWeight="Bold"
+                       Foreground="#7C3AED" HorizontalAlignment="Center"/>
+            <TextBlock Text="{Binding VersionText, StringFormat='Version {0}'}"
+                       FontSize="14" Foreground="#9CA3AF" HorizontalAlignment="Center"/>
+
+            <Border Background="#252535" CornerRadius="8" Padding="16" MaxWidth="400">
+              <TextBlock Text="{Binding AboutText}" FontSize="12" Foreground="#6B7280"
+                         TextWrapping="Wrap" TextAlignment="Center"/>
+            </Border>
+
+            <StackPanel Spacing="4">
+              <Button Content="Check model files" Command="{Binding CheckModelFilesCommand}"
+                      Background="#374151" Foreground="#E5E7EB" Padding="16,8"
+                      HorizontalAlignment="Center"/>
+              <TextBlock Text="{Binding ModelCheckResult}" FontSize="11" Foreground="#9CA3AF"
+                         TextWrapping="Wrap" HorizontalAlignment="Center"/>
+            </StackPanel>
+          </StackPanel>
+        </ScrollViewer>
+      </TabItem>
+    </TabControl>
+  </Border>
+</Window>

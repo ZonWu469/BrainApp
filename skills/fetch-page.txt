@@ -1,0 +1,37 @@
+public class FetchPageSkill
+{
+    private readonly SkillContext _context;
+
+    public FetchPageSkill(SkillContext context)
+    {
+        _context = context;
+    }
+
+    [Skill("fetch_page", Description = "Fetches readable text from a web page URL")]
+    public async Task<string> FetchPage(string url)
+    {
+        if (string.IsNullOrWhiteSpace(url))
+            return "Error: URL is required.";
+
+        if (!Uri.TryCreate(url, UriKind.Absolute, out var uri) ||
+            (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps))
+            return "Error: URL must be http or https.";
+
+        using var http = new HttpClient
+        {
+            Timeout = TimeSpan.FromSeconds(30)
+        };
+        http.DefaultRequestHeaders.UserAgent.ParseAdd("BrainApp/1.0");
+
+        using var response = await http.GetAsync(uri, _context.CancellationToken);
+        if (!response.IsSuccessStatusCode)
+            return $"Error: HTTP {(int)response.StatusCode} {response.ReasonPhrase} for {uri}";
+
+        var html = await response.Content.ReadAsStringAsync(_context.CancellationToken);
+        var text = SkillHelpers.ExtractTextFromHtml(html);
+
+        return string.IsNullOrWhiteSpace(text)
+            ? "No readable text found on the page."
+            : text;
+    }
+}

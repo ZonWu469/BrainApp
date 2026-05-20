@@ -1,0 +1,176 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:conv="clr-namespace:BrainApp.Desktop.Converters"
+             x:Class="BrainApp.Desktop.Views.ChatView"
+             x:Name="ChatViewRoot">
+
+  <Grid RowDefinitions="Auto,*,Auto,Auto,Auto">
+    <!-- Header bar -->
+    <Border Grid.Row="0" Background="#252535" Padding="16,10">
+      <Grid ColumnDefinitions="*,Auto,Auto,Auto">
+        <!-- Profile name + icon -->
+        <StackPanel Orientation="Horizontal" Spacing="8">
+          <Ellipse Width="12" Height="12" Fill="#7C3AED" VerticalAlignment="Center"/>
+          <TextBlock Text="{Binding CurrentProfile.Name, FallbackValue='Select a profile'}"
+                     FontSize="14" FontWeight="SemiBold" Foreground="#F9FAFB"
+                     VerticalAlignment="Center"/>
+        </StackPanel>
+
+        <!-- Action buttons -->
+        <Button Grid.Column="1" Command="{Binding NewChatCommand}"
+                Background="Transparent" Padding="8,4" Margin="0,0,4,0">
+          <TextBlock Text="New chat" FontSize="12" Foreground="#9CA3AF"/>
+        </Button>
+
+        <Button Grid.Column="2" Command="{Binding ExportChatCommand}"
+                Background="Transparent" Padding="8,4" Margin="0,0,4,0">
+          <TextBlock Text="Export" FontSize="12" Foreground="#9CA3AF"/>
+        </Button>
+
+        <Menu Grid.Column="3" Background="Transparent">
+          <MenuItem Header="Digest" FontSize="12" Foreground="#9CA3AF">
+            <MenuItem Header="Weekly digest" Command="{Binding GenerateDigestCommand}"/>
+            <MenuItem Header="Project status" Command="{Binding GenerateDigestCommand}"/>
+            <MenuItem Header="Contract review" Command="{Binding GenerateDigestCommand}"/>
+          </MenuItem>
+        </Menu>
+      </Grid>
+    </Border>
+
+    <!-- Message list -->
+    <ScrollViewer Grid.Row="1" Padding="16">
+      <ItemsControl ItemsSource="{Binding Messages}">
+        <ItemsControl.ItemTemplate>
+          <DataTemplate>
+            <Grid Margin="0,8">
+              <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*"/>
+              </Grid.ColumnDefinitions>
+
+              <!-- User message (right-aligned) -->
+              <Border Grid.Column="0"
+                      Background="#7C3AED" CornerRadius="12,12,4,12"
+                      Padding="12,10" HorizontalAlignment="Right"
+                      MaxWidth="500"
+                      IsVisible="{Binding IsUser}">
+                <TextBlock Text="{Binding Content}" FontSize="13"
+                           Foreground="White" TextWrapping="Wrap"/>
+              </Border>
+
+              <!-- Assistant message (left-aligned) -->
+              <Border Grid.Column="0"
+                      Background="#2D2D3A" CornerRadius="12,12,12,4"
+                      Padding="12,10" HorizontalAlignment="Left"
+                      MaxWidth="600"
+                      IsVisible="{Binding !IsUser}">
+                <StackPanel Spacing="8">
+                  <!-- Cache badge -->
+                  <Border Background="#F59E0B" CornerRadius="4" Padding="4,2"
+                          HorizontalAlignment="Left"
+                          IsVisible="{Binding FromCache}">
+                    <TextBlock Text="cached" FontSize="10" Foreground="White"/>
+                  </Border>
+
+                  <!-- Digest indicator -->
+                  <Border Background="#7C3AED" CornerRadius="4" Padding="4,2"
+                          HorizontalAlignment="Left"
+                          IsVisible="{Binding IsDigest}">
+                    <TextBlock Text="digest" FontSize="10" Foreground="White"/>
+                  </Border>
+
+                  <!-- Content -->
+                  <TextBlock Text="{Binding Content}" FontSize="13"
+                             Foreground="#E5E7EB" TextWrapping="Wrap"/>
+
+                  <!-- Citations (clickable to open source documents) -->
+                  <ItemsControl ItemsSource="{Binding Citations}"
+                                Margin="0,4,0,0">
+                    <ItemsControl.ItemTemplate>
+                      <DataTemplate>
+                        <Button Command="{Binding #ChatViewRoot.DataContext.OpenCitationCommand}"
+                                CommandParameter="{Binding}"
+                                Background="#374151" CornerRadius="4" Padding="6,4"
+                                Margin="0,2" Cursor="Hand"
+                                HorizontalAlignment="Left">
+                          <StackPanel Orientation="Horizontal" Spacing="4">
+                            <TextBlock Text="&#xE8A5;" FontFamily="Segoe MDL2 Assets" FontSize="10"
+                                       Foreground="#60A5FA" VerticalAlignment="Center"/>
+                            <TextBlock Text="{Binding FileName}" FontSize="10"
+                                       Foreground="#60A5FA" TextDecorations="Underline"/>
+                            <TextBlock Text=", page " Foreground="#6B7280" FontSize="10"
+                                       IsVisible="{Binding PageNumber, Converter={x:Static conv:PositiveIntConverter.Instance}}"/>
+                            <TextBlock Text="{Binding PageNumber}" FontSize="10"
+                                       Foreground="#9CA3AF"
+                                       IsVisible="{Binding PageNumber, Converter={x:Static conv:PositiveIntConverter.Instance}}"/>
+                          </StackPanel>
+                        </Button>
+                      </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                  </ItemsControl>
+
+                  <!-- Per-message token stats -->
+                  <TextBlock Text="{Binding TokenDisplay}" FontSize="10" Foreground="#4B5563"
+                             Margin="0,4,0,0" HorizontalAlignment="Right"
+                             IsVisible="{Binding TokenDisplay, Converter={x:Static StringConverters.IsNotNullOrEmpty}}"/>
+                </StackPanel>
+              </Border>
+            </Grid>
+          </DataTemplate>
+        </ItemsControl.ItemTemplate>
+      </ItemsControl>
+    </ScrollViewer>
+
+    <!-- Empty state -->
+    <StackPanel Grid.Row="1"
+                HorizontalAlignment="Center" VerticalAlignment="Center"
+                Spacing="8"
+                IsVisible="{Binding !Messages.Count}">
+      <TextBlock Text="Ask a question to get started" FontSize="14"
+                 Foreground="#6B7280" HorizontalAlignment="Center"/>
+    </StackPanel>
+
+    <!-- Status indicator -->
+    <Border Grid.Row="2" Padding="16,4"
+            IsVisible="{Binding StatusText, Converter={x:Static StringConverters.IsNotNullOrEmpty}}">
+      <StackPanel Orientation="Horizontal" Spacing="6">
+        <Ellipse Width="6" Height="6" Fill="#7C3AED" VerticalAlignment="Center"/>
+        <TextBlock Text="{Binding StatusText}" FontSize="11" Foreground="#9CA3AF"/>
+      </StackPanel>
+    </Border>
+
+    <!-- Token counter bar -->
+    <Border Grid.Row="3" Background="#1A1A2E" Padding="16,4"
+            IsVisible="{Binding TokenInfo, Converter={x:Static StringConverters.IsNotNullOrEmpty}}">
+      <TextBlock Text="{Binding TokenInfo}" FontSize="11" Foreground="#6B7280"
+                 HorizontalAlignment="Right"/>
+    </Border>
+
+    <!-- Input row -->
+    <Border Grid.Row="4" Background="#1E1E2E" Padding="16,12">
+      <Grid ColumnDefinitions="*,Auto,Auto">
+        <TextBox Grid.Column="0"
+                 Text="{Binding InputText}"
+                 Watermark="Ask a question..."
+                 AcceptsReturn="True"
+                 FontSize="13"
+                 Padding="12,10"
+                 MinHeight="44"
+                 MaxHeight="120"/>
+
+        <!-- Send button -->
+        <Button Grid.Column="1" Command="{Binding SendMessageCommand}"
+                Background="#7C3AED" Padding="12,8" Margin="8,0,4,0"
+                IsVisible="{Binding !IsStreaming}">
+          <TextBlock Text="Send" FontSize="12" Foreground="White"/>
+        </Button>
+
+        <!-- Stop button (visible while streaming) -->
+        <Button Grid.Column="1" Command="{Binding StopGenerationCommand}"
+                Background="#EF4444" Padding="12,8" Margin="8,0,4,0"
+                IsVisible="{Binding IsStreaming}">
+          <TextBlock Text="Stop" FontSize="12" Foreground="White"/>
+        </Button>
+      </Grid>
+    </Border>
+  </Grid>
+</UserControl>

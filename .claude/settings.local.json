@@ -1,0 +1,19 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(grep -A 3 \"DefaultSamplingPipeline\\\\|SamplingPipeline\\\\b\\\\|ISamplingPipeline\" \"/c/Users/dbagn/.nuget/packages/llamasharp/0.18.0/lib/net8.0/LLamaSharp.xml\" | head -80)",
+      "Read(//c/Users/dbagn/.nuget/packages/llamasharp/0.18.0/lib/net8.0/**)",
+      "Bash(Get-ChildItem -Path \"c:\\\\Users\\\\dbagn\\\\Desktop\\\\LELE\\\\BrainApp\" -Force)",
+      "Bash(Select-Object Name, PSIsContainer)",
+      "Bash(Get-ChildItem -Path \"c:\\\\Users\\\\dbagn\\\\Desktop\\\\LELE\\\\BrainApp\" -Recurse -Filter \"*[Ss]kill*\" -File)",
+      "Bash(Select-Object -First 30)",
+      "Bash(dotnet test *)",
+      "Bash(dotnet build *)",
+      "Bash(grep -E \"\\\\.\\(cs|xaml\\)$\")",
+      "WebSearch",
+      "WebFetch(domain:github.com)",
+      "Bash(dotnet restore *)",
+      "PowerShell(Get-ChildItem -Path \"c:\\\\Users\\\\dbagn\\\\Desktop\\\\LELE\\\\BrainApp\" -Recurse -Depth 2 -Directory | Select-Object -First 20 | ForEach-Object { $_.FullName })"
+    ]
+  }
+}

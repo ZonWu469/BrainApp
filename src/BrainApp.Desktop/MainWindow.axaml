@@ -1,0 +1,76 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:views="clr-namespace:BrainApp.Desktop.Views"
+        x:Class="BrainApp.Desktop.MainWindow"
+        Title="BrainApp"
+        Width="1200" Height="800"
+        MinWidth="800" MinHeight="600"
+        Background="#1E1E2E">
+
+  <Grid RowDefinitions="Auto,*">
+    <!-- Toolbar -->
+    <Border Grid.Row="0" Background="#252535" Padding="16,8">
+      <Grid ColumnDefinitions="Auto,*,Auto">
+        <!-- Logo + title -->
+        <StackPanel Orientation="Horizontal" Spacing="8">
+          <TextBlock Text="BrainApp" FontSize="16" FontWeight="Bold"
+                     Foreground="#F9FAFB" VerticalAlignment="Center"/>
+        </StackPanel>
+
+        <!-- Profile name (center) -->
+        <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8"
+                    HorizontalAlignment="Center">
+          <TextBlock Text="{Binding SelectedProfile.Name, FallbackValue='No profile selected'}"
+                     FontSize="14" Foreground="#E5E7EB" VerticalAlignment="Center"/>
+        </StackPanel>
+
+        <!-- Model badge + settings -->
+        <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="12">
+          <!-- Model badge -->
+          <Border Background="#2D2D3A" CornerRadius="8" Padding="8,4">
+            <StackPanel Orientation="Horizontal">
+              <TextBlock Text="{Binding ModelStatusText, StringFormat='■ {0}'}"
+                         FontSize="11" Foreground="#9CA3AF" VerticalAlignment="Center"/>
+            </StackPanel>
+          </Border>
+
+          <!-- Settings button -->
+          <Button Click="OpenSettingsButton_Click"
+                  Background="Transparent" Padding="8,4">
+            <TextBlock Text="Settings" FontSize="12" Foreground="#9CA3AF"/>
+          </Button>
+        </StackPanel>
+      </Grid>
+    </Border>
+
+    <!-- 3-column main content -->
+    <Grid Grid.Row="1" ColumnDefinitions="200,1,*">
+      <!-- Profile sidebar (200px) -->
+      <Border Grid.Column="0" Background="#1E1E2E">
+        <views:ProfilesPanel DataContext="{Binding}"/>
+      </Border>
+
+      <!-- Vertical divider -->
+      <Border Grid.Column="1" Background="#2D2D3A"/>
+
+      <!-- Chat area (flex) -->
+      <Border Grid.Column="2" Background="#0F0F17" Margin="0,0,280,0">
+        <views:ChatView DataContext="{Binding ChatViewModel}"/>
+      </Border>
+
+      <!-- Right panel: Documents | Skills (280px) -->
+      <Border Grid.Column="2" Background="#1E1E2E" Width="280" HorizontalAlignment="Right">
+        <TabControl Background="Transparent" SelectedIndex="0">
+          <TabItem Header="Documents">
+            <views:DocumentsView DataContext="{Binding DocumentsViewModel}"/>
+          </TabItem>
+          <TabItem Header="Skills">
+            <views:SkillsView DataContext="{Binding SkillsViewModel}"/>
+          </TabItem>
+        </TabControl>
+      </Border>
+    </Grid>
+
+    <!-- Settings overlay placeholder (shown via code-behind) -->
+  </Grid>
+</Window>
