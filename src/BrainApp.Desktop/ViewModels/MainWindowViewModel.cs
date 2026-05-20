@@ -122,7 +122,7 @@ public partial class MainWindowViewModel : ObservableObject
             Name = name,
             Color = "#7C3AED",
             CreatedAt = DateTime.UtcNow,
-            SystemPrompt = "You are a helpful AI assistant. Answer questions based only on the provided documents. Always cite sources as [filename, page N]."
+            SystemPrompt = Profile.DefaultSystemPrompt
         };
         _profileRepo.SaveProfile(profile);
         Profiles.Add(profile);

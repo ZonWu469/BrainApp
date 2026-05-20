@@ -361,7 +361,7 @@ public class ChatService
     }
 
     private static string BuildRagUserPrompt(string ragContext, string question) =>
-        $"Answer using ONLY the context provided. Always cite sources as [filename, page N]. If the context does not contain enough information, say so clearly. Respond in the same language as the question.\n\nContext:\n{ragContext}\n\nQuestion: {question}";
+        $"Answer using ONLY the context provided. Always cite sources as [filename, page N]. If the context does not contain enough information, say so clearly.\n\nContext:\n{ragContext}\n\nQuestion: {question}\n\nWrite your entire answer in the SAME language as the Question above. Do NOT translate or repeat the answer in any other language. Output the answer once, in one language only.";
 
     private static string BuildRoutingUserPrompt(string ragContext, string question)
     {

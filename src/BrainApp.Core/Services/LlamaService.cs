@@ -3,6 +3,7 @@ using System.Security.Cryptography;
 using System.Text;
 using LLama;
 using LLama.Common;
+using LLama.Native;
 using LLama.Sampling;
 using Microsoft.Extensions.Options;
 using Serilog;
@@ -31,6 +32,9 @@ public class LlamaService : IAsyncDisposable
     private LLamaEmbedder? _embedder;
     private bool _initialized;
 
+    // NativeLibraryConfig must be configured exactly once, before the first native call.
+    private static int _nativeConfigured;
+
     public bool IsInitialized => _initialized;
 
     public LlamaService(
@@ -51,6 +55,8 @@ public class LlamaService : IAsyncDisposable
     {
         if (_initialized)
             return;
+
+        ConfigureNativeBackend();
 
         var modelsFolder = _settings.GetResolvedModelsFolder(_storageSettings);
         var chatPath = _settings.GetResolvedChatModelPath(_storageSettings);
@@ -82,9 +88,9 @@ public class LlamaService : IAsyncDisposable
         _embedParams = new ModelParams(embedPath)
         {
             ContextSize = 8192,
-            BatchSize = 8192,
-            UBatchSize = 8192,
-            GpuLayerCount = _settings.GpuLayerCount,
+            BatchSize = 512,
+            UBatchSize = 512,
+            GpuLayerCount = 0,
             Embeddings = true,
             PoolingType = LLama.Native.LLamaPoolingType.Mean
         };
@@ -98,7 +104,7 @@ public class LlamaService : IAsyncDisposable
 
         _initialized = true;
         Log.Information("LLamaSharp initialized successfully. Chat layers: {Layers}, Embedding layers: {EmbedLayers}",
-            _settings.GpuLayerCount, _settings.GpuLayerCount);
+            _settings.GpuLayerCount, 0);
     }
 
     /// <summary>
@@ -228,6 +234,50 @@ public class LlamaService : IAsyncDisposable
         {
             Log.Warning(ex, "Token counting failed, returning estimate");
             return text.Length / 4;
+        }
+    }
+
+    private static void ConfigureNativeBackend()
+    {
+        if (Interlocked.Exchange(ref _nativeConfigured, 1) == 1)
+            return;
+
+        void Forward(LLamaLogLevel level, string? msg)
+        {
+            var text = msg?.TrimEnd();
+            if (string.IsNullOrEmpty(text)) return;
+            switch (level)
+            {
+                case LLamaLogLevel.Error: Log.Error("[llama] {Msg}", text); break;
+                case LLamaLogLevel.Warning: Log.Warning("[llama] {Msg}", text); break;
+                default: Log.Information("[llama] {Msg}", text); break;
+            }
+        }
+
+        try
+        {
+            // Prefer CUDA, fall back to Vulkan, then CPU as last resort.
+            // GTX 1650 + driver 591.55 satisfies Vulkan via NVIDIA's bundled ICD;
+            // CUDA12 native DLL only loads if cudart64_12/cublas64_12 are on PATH.
+            NativeLibraryConfig.All
+                .WithCuda(true)
+                .WithVulkan(true)
+                .WithAutoFallback(true)
+                .WithLogCallback(Forward);
+        }
+        catch (Exception ex)
+        {
+            Log.Warning(ex, "NativeLibraryConfig setup failed — backend may have been initialized already");
+        }
+
+        try
+        {
+            // llama.cpp's own logger — emits the verbose device/load/offload lines.
+            NativeLogConfig.llama_log_set((level, msg) => Forward(level, msg));
+        }
+        catch (Exception ex)
+        {
+            Log.Warning(ex, "NativeLogConfig hook failed");
         }
     }
 

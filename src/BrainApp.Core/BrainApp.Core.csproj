@@ -14,6 +14,7 @@
     <!-- LLamaSharp backends — Cuda11 dropped after 0.24.0; Cuda12 covers modern NVIDIA GPUs -->
     <PackageReference Include="LLamaSharp.Backend.Cpu" Version="0.27.0" />
     <PackageReference Include="LLamaSharp.Backend.Cuda12" Version="0.27.0" />
+    <PackageReference Include="LLamaSharp.Backend.Vulkan" Version="0.27.0" />
 
     <!-- Document parsing -->
     <PackageReference Include="PdfPig" Version="0.1.9-alpha-20231113-1bc0e" />

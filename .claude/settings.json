@@ -1,0 +1,19 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(where nvidia-smi *)",
+      "Bash(nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv)",
+      "Bash(ls \"src/BrainApp.Desktop/bin/Debug/net8.0/runtimes/win-x64/native/\" 2>nul | head -30 ; ls \"src/BrainApp.Desktop/bin/Debug/net8.0/\" 2>nul | head -30)",
+      "Bash(find ~/.nuget/packages/llamasharp/0.27.0 -name \"*.dll\" 2>/dev/null | head -5)",
+      "Read(//c/Users/dbagn/.nuget/packages/llamasharp/0.27.0/**)",
+      "WebFetch(domain:www.nuget.org)",
+      "Bash(Get-ChildItem -Path \"c:\\\\Users\\\\dbagn\\\\Desktop\\\\Progetti\\\\BrainAppGit\" -Directory)",
+      "Bash(Select-Object Name)",
+      "Bash(Get-ChildItem -Recurse -Filter \"*.xaml\" \"c:\\\\Users\\\\dbagn\\\\Desktop\\\\Progetti\\\\BrainAppGit\")",
+      "Bash(Select-Object FullName)"
+    ],
+    "additionalDirectories": [
+      "C:\\Users\\dbagn\\Desktop\\Progetti\\BrainAppGit"
+    ]
+  }
+}
