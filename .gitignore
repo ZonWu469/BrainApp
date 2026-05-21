@@ -9,3 +9,4 @@ src/BrainApp.Desktop/bin/
 models/bge-m3-Q4_K_M.gguf
 models/nomic-embed-text-v1.5.Q4_K_M.gguf
 models/Qwen3-1.7B-Q8_0.gguf
+tests/BrainApp.Tests/bin/

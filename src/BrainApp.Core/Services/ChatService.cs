@@ -5,6 +5,11 @@ using BrainApp.Core.Config;
 using BrainApp.Core.Models;
 using BrainApp.Core.Skills;
 
+// MAINTAINER NOTE: bump CacheService.PromptVersion whenever you change
+// BuildSystemPrompt, BuildRagUserPrompt, the language-pin helpers below, or any
+// chat-template builder in LlamaService. The query cache key incorporates that
+// constant; without a bump, old answers generated under the previous prompts
+// will keep being served until their 30-min TTL expires.
 namespace BrainApp.Core.Services;
 
 /// <summary>
@@ -49,10 +54,11 @@ public class ChatService
         var citations = BuildCitations(profile.Id, retrieved);
 
         var cachedAnswer = _cache.GetAnswer(profile.Id, normalized);
+        Log.Information("Chat: profile={ProfileId} cacheHit={Hit} citations={Count}",
+            profile.Id, cachedAnswer != null, citations.Count);
         if (cachedAnswer != null)
         {
             sw.Stop();
-            Log.Information("Query cache hit for profile {ProfileId}", profile.Id);
             return new ChatMessage
             {
                 Id = Guid.NewGuid().ToString("N")[..8],
@@ -181,6 +187,8 @@ public class ChatService
             await onCitations(citations);
 
         var cachedAnswer = _cache.GetAnswer(profile.Id, normalized);
+        Log.Information("Chat: profile={ProfileId} cacheHit={Hit} citations={Count}",
+            profile.Id, cachedAnswer != null, citations.Count);
         if (cachedAnswer != null)
         {
             onStatus?.Invoke("Answer from cache");
@@ -256,20 +264,85 @@ public class ChatService
         var inputTokens = _llama.CountTokens(fullPrompt);
         int outputTokenCount = 0;
 
-        var sb = new System.Text.StringBuilder();
+        var rawAccum = new System.Text.StringBuilder();
+        var pending = new System.Text.StringBuilder();
+        var cleanAccum = new System.Text.StringBuilder();
+        bool inThink = false;
+        const string OpenTag = "<think>";
+        const string CloseTag = "</think>";
+        int holdBack = Math.Max(OpenTag.Length, CloseTag.Length);
+
         await foreach (var token in _llama.ChatStreamAsync(systemPrompt, history, userPrompt, ct))
         {
-            sb.Append(token);
+            rawAccum.Append(token);
             outputTokenCount++;
-            if (ContainsStopSignal(sb))
+            if (ContainsStopSignal(rawAccum))
                 break;
-            yield return token;
+
+            pending.Append(token);
+
+            while (true)
+            {
+                var text = pending.ToString();
+                if (inThink)
+                {
+                    var closeIdx = text.IndexOf(CloseTag, StringComparison.OrdinalIgnoreCase);
+                    if (closeIdx >= 0)
+                    {
+                        pending.Clear();
+                        pending.Append(text[(closeIdx + CloseTag.Length)..]);
+                        inThink = false;
+                        continue;
+                    }
+                    if (text.Length > holdBack)
+                    {
+                        pending.Clear();
+                        pending.Append(text[^holdBack..]);
+                    }
+                    break;
+                }
+                else
+                {
+                    var openIdx = text.IndexOf(OpenTag, StringComparison.OrdinalIgnoreCase);
+                    if (openIdx >= 0)
+                    {
+                        var safe = text[..openIdx];
+                        if (safe.Length > 0)
+                        {
+                            yield return safe;
+                            cleanAccum.Append(safe);
+                        }
+                        pending.Clear();
+                        pending.Append(text[(openIdx + OpenTag.Length)..]);
+                        inThink = true;
+                        continue;
+                    }
+                    if (text.Length > holdBack)
+                    {
+                        var safeLen = text.Length - holdBack;
+                        var safe = text[..safeLen];
+                        yield return safe;
+                        cleanAccum.Append(safe);
+                        pending.Clear();
+                        pending.Append(text[safeLen..]);
+                    }
+                    break;
+                }
+            }
+
             onTokenStats?.Invoke(new TokenStats(inputTokens, outputTokenCount, inputTokens + outputTokenCount, _llamaSettings.ContextSize));
+        }
+
+        if (!inThink && pending.Length > 0)
+        {
+            var tail = pending.ToString();
+            yield return tail;
+            cleanAccum.Append(tail);
         }
 
         onTokenStats?.Invoke(new TokenStats(inputTokens, outputTokenCount, inputTokens + outputTokenCount, _llamaSettings.ContextSize));
 
-        var finalAnswer = SanitizeAnswer(TruncateAtMarker(sb.ToString()));
+        var finalAnswer = SanitizeAnswer(TruncateAtMarker(cleanAccum.ToString()));
         if (!skillUsed)
             _cache.SetAnswer(profile.Id, normalized, finalAnswer);
     }
@@ -352,20 +425,59 @@ public class ChatService
         return await _llama.ChatAsync(systemPrompt, new(), userPrompt, ct);
     }
 
+    private const string LanguageDirectiveSuffix =
+        "\n\nAlways respond in the same language as the user's most recent message. " +
+        "Output the answer once, in one language only — never include translations or " +
+        "restate it in another language.";
+
     private static string BuildSystemPrompt(string basePrompt, List<SkillMethodDefinition> enabledSkills)
     {
         var skillsBlock = SkillCatalogService.BuildSkillsPromptBlock(enabledSkills);
-        if (string.IsNullOrEmpty(skillsBlock))
-            return basePrompt;
-        return basePrompt + skillsBlock;
+        var prefix = string.IsNullOrEmpty(skillsBlock) ? basePrompt : basePrompt + skillsBlock;
+        return prefix + LanguageDirectiveSuffix;
     }
 
-    private static string BuildRagUserPrompt(string ragContext, string question) =>
-        $"Answer using ONLY the context provided. Always cite sources as [filename, page N]. If the context does not contain enough information, say so clearly.\n\nContext:\n{ragContext}\n\nQuestion: {question}\n\nWrite your entire answer in the SAME language as the Question above. Do NOT translate or repeat the answer in any other language. Output the answer once, in one language only.";
+    private static readonly HashSet<string> ItalianMarkers = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "il", "la", "lo", "gli", "le", "di", "da", "del", "della", "dei", "degli", "delle",
+        "che", "è", "sono", "non", "con", "per", "una", "uno", "sul", "sulla",
+        "questo", "questa", "quale", "come", "dove", "quando", "perché", "perche",
+        "ma", "anche", "molto", "qui", "qua", "cosa", "tutto", "essere", "fare",
+        "riassumi", "spiega", "elenca", "descrivi"
+    };
+
+    private static string DetectLanguageDirective(string question)
+    {
+        if (string.IsNullOrWhiteSpace(question)) return string.Empty;
+
+        if (question.IndexOfAny(new[] { 'à', 'è', 'é', 'ì', 'ò', 'ù', 'À', 'È', 'É', 'Ì', 'Ò', 'Ù' }) >= 0)
+            return "Rispondi in italiano. ";
+
+        var tokens = question.ToLowerInvariant()
+            .Split(new[] { ' ', '\t', '\n', '\r', '.', ',', ';', ':', '!', '?', '\'', '"', '(', ')' },
+                   StringSplitOptions.RemoveEmptyEntries);
+        int hits = 0;
+        foreach (var t in tokens)
+        {
+            if (ItalianMarkers.Contains(t))
+            {
+                hits++;
+                if (hits >= 2) return "Rispondi in italiano. ";
+            }
+        }
+        return string.Empty;
+    }
+
+    private static string BuildRagUserPrompt(string ragContext, string question)
+    {
+        var langPin = DetectLanguageDirective(question);
+        return $"{langPin}Answer using ONLY the context provided. Always cite sources as [filename, page N]. If the context does not contain enough information, say so clearly.\n\nContext:\n{ragContext}\n\nQuestion: {question}\n\n{langPin}Write your entire answer in the SAME language as the Question above. Do NOT translate or repeat the answer in any other language. Output the answer once, in one language only.";
+    }
 
     private static string BuildRoutingUserPrompt(string ragContext, string question)
     {
         var hasUrl = ContainsHttpUrl(question);
+        var langPin = DetectLanguageDirective(question);
         return
             $"Decide whether to call a skill or answer from documents and conversation history.\n" +
             $"STRICT RULE: emit a JSON skill call ONLY if the user's latest message above contains a full http:// or https:// URL.\n" +
@@ -375,7 +487,7 @@ public class ChatService
             $"Do NOT call fetch_page if the user question can be answered from prior messages in this chat.\n" +
             $"If you do emit JSON, output ONLY the JSON object (no markdown fences, no commentary before or after).\n" +
             $"Otherwise answer using the context below and conversation history, citing document sources as [filename, page N].\n\n" +
-            $"Context:\n{ragContext}\n\nQuestion: {question}";
+            $"Context:\n{ragContext}\n\nQuestion: {question}\n\n{langPin}";
     }
 
     private static bool IsKnownSkill(string skillKey, List<SkillMethodDefinition> enabledSkills)

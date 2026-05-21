@@ -161,10 +161,15 @@ public class CacheService
         return "emb:" + Convert.ToHexString(hash)[..16].ToLowerInvariant();
     }
 
+    // Bump PromptVersion whenever BuildSystemPrompt, BuildRagUserPrompt, or any
+    // chat-template builder in LlamaService changes — otherwise stale cached
+    // answers generated under the old prompts will keep being served.
+    public const string PromptVersion = "v2-2026-05";
+
     private string GetQueryKey(string profileId, string normalizedQuestion)
     {
         var generation = GetProfileGeneration(profileId);
-        var combined = $"{profileId}:{generation}:{normalizedQuestion}";
+        var combined = $"{profileId}:{generation}:{PromptVersion}:{normalizedQuestion}";
         var hash = SHA256.HashData(Encoding.UTF8.GetBytes(combined));
         return "q:" + Convert.ToHexString(hash)[..20].ToLowerInvariant();
     }

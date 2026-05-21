@@ -1,6 +1,7 @@
 using System.Runtime.CompilerServices;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.RegularExpressions;
 using LLama;
 using LLama.Common;
 using LLama.Native;
@@ -292,9 +293,20 @@ public class LlamaService : IAsyncDisposable
         "<start_of_turn>", "<end_of_turn>"
     };
 
+    private static readonly Regex ThinkBlockRegex = new(
+        @"<think>[\s\S]*?</think>",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    private static readonly Regex UnclosedThinkRegex = new(
+        @"<think>[\s\S]*$",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
     private static string CleanOutput(string raw)
     {
         var result = raw;
+
+        result = ThinkBlockRegex.Replace(result, string.Empty);
+        result = UnclosedThinkRegex.Replace(result, string.Empty);
 
         foreach (var marker in TruncateMarkers)
         {
@@ -329,7 +341,7 @@ public class LlamaService : IAsyncDisposable
     private static string BuildQwenPrompt(string system, List<(MessageRole, string)> history, string userMsg)
     {
         var sb = new StringBuilder();
-        sb.Append($"<|im_start|>system\n{system}<|im_end|>\n");
+        sb.Append($"<|im_start|>system\n{system} /no_think<|im_end|>\n");
         foreach (var (role, content) in history)
         {
             var r = role == MessageRole.User ? "user" : "assistant";

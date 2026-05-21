@@ -140,11 +140,15 @@ public class RetrievalService
 
         var queryTokens = Tokenize(query);
         var scoredChunks = new List<RetrievedChunk>();
+        int nullEmbeds = 0;
 
         foreach (var chunk in chunks)
         {
             if (chunk.Embedding == null || chunk.Embedding.Length == 0)
+            {
+                nullEmbeds++;
                 continue;
+            }
 
             double semanticScore = CosineSimilarity(queryEmbedding, chunk.Embedding);
             double keywordScore = CalculateKeywordScore(queryTokens, Tokenize(chunk.Text));
@@ -163,7 +167,13 @@ public class RetrievalService
 
         var ordered = scoredChunks.OrderByDescending(c => c.Score).ToList();
         var aboveThreshold = ordered.Where(c => c.Score >= _settings.MinRelevanceScore).ToList();
-        return (aboveThreshold.Count > 0 ? aboveThreshold : ordered).Take(k).ToList();
+        var result = (aboveThreshold.Count > 0 ? aboveThreshold : ordered).Take(k).ToList();
+        Log.Information(
+            "Retrieval: chunks={Chunks} nullEmbeddings={Null} scored={Scored} aboveThreshold={Pass} returned={Returned} topScore={Top:F3} minScore={Min:F3}",
+            chunks.Count, nullEmbeds, ordered.Count, aboveThreshold.Count, result.Count,
+            ordered.Count > 0 ? ordered[0].Score : 0.0,
+            _settings.MinRelevanceScore);
+        return result;
     }
 
     /// <summary>
