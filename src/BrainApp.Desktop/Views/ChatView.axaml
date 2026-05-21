@@ -53,8 +53,8 @@
                       Padding="12,10" HorizontalAlignment="Right"
                       MaxWidth="500"
                       IsVisible="{Binding IsUser}">
-                <TextBlock Text="{Binding Content}" FontSize="13"
-                           Foreground="White" TextWrapping="Wrap"/>
+                <SelectableTextBlock Text="{Binding Content}" FontSize="13"
+                                     Foreground="White" TextWrapping="Wrap"/>
               </Border>
 
               <!-- Assistant message (left-aligned) -->
@@ -79,8 +79,8 @@
                   </Border>
 
                   <!-- Content -->
-                  <TextBlock Text="{Binding Content}" FontSize="13"
-                             Foreground="#E5E7EB" TextWrapping="Wrap"/>
+                  <SelectableTextBlock Text="{Binding Content}" FontSize="13"
+                                       Foreground="#E5E7EB" TextWrapping="Wrap"/>
 
                   <!-- Citations (clickable to open source documents) -->
                   <ItemsControl ItemsSource="{Binding Citations}"
@@ -97,7 +97,7 @@
                                        Foreground="#60A5FA" VerticalAlignment="Center"/>
                             <TextBlock Text="{Binding FileName}" FontSize="10"
                                        Foreground="#60A5FA" TextDecorations="Underline"/>
-                            <TextBlock Text=", page " Foreground="#6B7280" FontSize="10"
+                            <TextBlock Text="{Binding CitationUnit, StringFormat=', {0} '}" Foreground="#6B7280" FontSize="10"
                                        IsVisible="{Binding PageNumber, Converter={x:Static conv:PositiveIntConverter.Instance}}"/>
                             <TextBlock Text="{Binding PageNumber}" FontSize="10"
                                        Foreground="#9CA3AF"

@@ -15,7 +15,8 @@ public class Profile
 
     public const string DefaultSystemPrompt =
         "You are a precise knowledge base assistant. Answer questions using ONLY " +
-        "the provided document excerpts. Always cite sources as [filename, page N]. " +
+        "the provided document excerpts. Cite sources exactly as shown in the context " +
+        "header — either [filename, page N] or [filename, section N]. " +
         "If the documents do not contain enough information, say so clearly. " +
         "Never invent facts not present in the provided context. " +
         "Always respond in the same language as the user's question.";
@@ -58,6 +59,7 @@ public class DocumentChunk
     public string Text { get; set; } = string.Empty;
     public int ChunkIndex { get; set; }
     public int PageNumber { get; set; }
+    public bool IsPaginated { get; set; } = true;
     public float[]? Embedding { get; set; }
 }
 
@@ -93,6 +95,7 @@ public class ChunkCitation
     public string FileName { get; set; } = string.Empty;
     public string FilePath { get; set; } = string.Empty;
     public int PageNumber { get; set; }
+    public string CitationUnit { get; set; } = "page";
     public string Excerpt { get; set; } = string.Empty;
     public double RelevanceScore { get; set; }
 }

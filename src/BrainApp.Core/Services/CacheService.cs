@@ -164,7 +164,7 @@ public class CacheService
     // Bump PromptVersion whenever BuildSystemPrompt, BuildRagUserPrompt, or any
     // chat-template builder in LlamaService changes — otherwise stale cached
     // answers generated under the old prompts will keep being served.
-    public const string PromptVersion = "v2-2026-05";
+    public const string PromptVersion = "v3-2026-05";
 
     private string GetQueryKey(string profileId, string normalizedQuestion)
     {

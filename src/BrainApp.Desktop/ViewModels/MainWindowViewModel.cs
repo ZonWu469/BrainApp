@@ -48,6 +48,9 @@ public partial class MainWindowViewModel : ObservableObject
     [ObservableProperty]
     private SettingsViewModel? _settingsViewModel;
 
+    [ObservableProperty]
+    private bool _isProfileLoading;
+
     public MainWindowViewModel(
         LlamaService llama,
         ProfileRepository profileRepo,
@@ -103,13 +106,33 @@ public partial class MainWindowViewModel : ObservableObject
 
     partial void OnSelectedProfileChanged(Profile? value)
     {
-        if (value != null)
+        if (value == null)
+            return;
+
+        // Load the index off the UI thread — for profiles with many chunks the SQLite read
+        // and embedding-BLOB deserialization can take a noticeable amount of time. The
+        // progress bar bound to IsProfileLoading gives the user feedback while it runs.
+        // The view-model loads (ChatViewModel etc.) read other tables and need the UI
+        // thread, so they stay synchronous.
+        IsProfileLoading = true;
+        var profile = value;
+        var appDataFolder = _storageSettings.ResolvedAppDataFolder;
+
+        Task.Run(async () =>
         {
-            _ = _retrieval.LoadIndexAsync(value.Id, _storageSettings.ResolvedAppDataFolder);
-            ChatViewModel?.LoadProfile(value);
-            DocumentsViewModel?.LoadProfile(value.Id);
-            SkillsViewModel?.LoadProfile(value.Id);
-        }
+            try
+            {
+                await _retrieval.LoadIndexAsync(profile.Id, appDataFolder);
+            }
+            finally
+            {
+                await Dispatcher.UIThread.InvokeAsync(() => IsProfileLoading = false);
+            }
+        });
+
+        ChatViewModel?.LoadProfile(value);
+        DocumentsViewModel?.LoadProfile(value.Id);
+        SkillsViewModel?.LoadProfile(value.Id);
     }
 
     [RelayCommand]

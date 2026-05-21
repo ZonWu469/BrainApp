@@ -7,7 +7,7 @@
         MinWidth="800" MinHeight="600"
         Background="#1E1E2E">
 
-  <Grid RowDefinitions="Auto,*">
+  <Grid RowDefinitions="Auto,Auto,*">
     <!-- Toolbar -->
     <Border Grid.Row="0" Background="#252535" Padding="16,8">
       <Grid ColumnDefinitions="Auto,*,Auto">
@@ -43,8 +43,13 @@
       </Grid>
     </Border>
 
+    <!-- Profile-loading progress bar (indeterminate) -->
+    <ProgressBar Grid.Row="1" IsIndeterminate="True" Height="2"
+                 Foreground="#7C3AED" Background="Transparent"
+                 IsVisible="{Binding IsProfileLoading}"/>
+
     <!-- 3-column main content -->
-    <Grid Grid.Row="1" ColumnDefinitions="200,1,*">
+    <Grid Grid.Row="2" ColumnDefinitions="200,1,*">
       <!-- Profile sidebar (200px) -->
       <Border Grid.Column="0" Background="#1E1E2E">
         <views:ProfilesPanel DataContext="{Binding}"/>

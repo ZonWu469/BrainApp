@@ -122,6 +122,7 @@ public class ProfileRepository : IDisposable
                 text TEXT NOT NULL,
                 chunk_index INTEGER NOT NULL,
                 page_number INTEGER NOT NULL,
+                is_paginated INTEGER NOT NULL DEFAULT 1,
                 embedding BLOB NOT NULL,
                 FOREIGN KEY (profile_id) REFERENCES profiles(id) ON DELETE CASCADE,
                 FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE CASCADE
@@ -142,7 +143,56 @@ public class ProfileRepository : IDisposable
         ";
         cmd.ExecuteNonQuery();
 
+        MigrateChunksIsPaginated();
+
         Log.Information("ProfileRepository initialized. DB: {DbPath}", _dbPath);
+    }
+
+    /// <summary>
+    /// One-time schema and data migration for the is_paginated column. Adds the column
+    /// to legacy DBs and backfills page_number = chunk_index + 1 for rows that came in
+    /// with page_number = 0 (every non-PDF chunk before this change). Non-PDF rows are
+    /// also marked is_paginated = 0 so the UI renders "section N" instead of "page N".
+    /// Safe to call on every startup: the ALTER is guarded and the UPDATE is a no-op once applied.
+    /// </summary>
+    private void MigrateChunksIsPaginated()
+    {
+        // Check whether the column already exists. PRAGMA table_info returns one row per column.
+        bool hasColumn = false;
+        using (var pragma = _connection!.CreateCommand())
+        {
+            pragma.CommandText = "PRAGMA table_info(chunks)";
+            using var reader = pragma.ExecuteReader();
+            while (reader.Read())
+            {
+                if (string.Equals(reader.GetString(1), "is_paginated", StringComparison.OrdinalIgnoreCase))
+                {
+                    hasColumn = true;
+                    break;
+                }
+            }
+        }
+
+        if (!hasColumn)
+        {
+            using var alter = _connection!.CreateCommand();
+            alter.CommandText = "ALTER TABLE chunks ADD COLUMN is_paginated INTEGER NOT NULL DEFAULT 1";
+            alter.ExecuteNonQuery();
+            Log.Information("Added is_paginated column to chunks table");
+        }
+
+        // Backfill: chunks that came in with page_number = 0 are all non-paginated formats
+        // (DOCX/PPTX/HTML/MD/TXT/images). Rewrite their page_number to chunk_index + 1 and
+        // flag them as non-paginated so the UI shows "section N".
+        using var update = _connection!.CreateCommand();
+        update.CommandText = @"
+            UPDATE chunks
+            SET page_number = chunk_index + 1,
+                is_paginated = 0
+            WHERE page_number = 0";
+        var affected = update.ExecuteNonQuery();
+        if (affected > 0)
+            Log.Information("Backfilled {Count} legacy chunks: page_number = chunk_index + 1, is_paginated = 0", affected);
     }
 
     // ==================== PROFILE CRUD ====================
@@ -499,8 +549,8 @@ public class ProfileRepository : IDisposable
                 using var cmd = _connection!.CreateCommand();
                 cmd.Transaction = transaction;
                 cmd.CommandText = @"
-                    INSERT OR REPLACE INTO chunks (id, profile_id, document_id, file_name, text, chunk_index, page_number, embedding)
-                    VALUES (@id, @profile_id, @document_id, @file_name, @text, @chunk_index, @page_number, @embedding)";
+                    INSERT OR REPLACE INTO chunks (id, profile_id, document_id, file_name, text, chunk_index, page_number, is_paginated, embedding)
+                    VALUES (@id, @profile_id, @document_id, @file_name, @text, @chunk_index, @page_number, @is_paginated, @embedding)";
 
                 var pId = cmd.Parameters.Add("@id", Microsoft.Data.Sqlite.SqliteType.Text);
                 var pProfile = cmd.Parameters.Add("@profile_id", Microsoft.Data.Sqlite.SqliteType.Text);
@@ -509,6 +559,7 @@ public class ProfileRepository : IDisposable
                 var pText = cmd.Parameters.Add("@text", Microsoft.Data.Sqlite.SqliteType.Text);
                 var pChunkIdx = cmd.Parameters.Add("@chunk_index", Microsoft.Data.Sqlite.SqliteType.Integer);
                 var pPage = cmd.Parameters.Add("@page_number", Microsoft.Data.Sqlite.SqliteType.Integer);
+                var pPaginated = cmd.Parameters.Add("@is_paginated", Microsoft.Data.Sqlite.SqliteType.Integer);
                 var pEmbed = cmd.Parameters.Add("@embedding", Microsoft.Data.Sqlite.SqliteType.Blob);
 
                 foreach (var chunk in chunks)
@@ -520,6 +571,7 @@ public class ProfileRepository : IDisposable
                     pText.Value = chunk.Text;
                     pChunkIdx.Value = chunk.ChunkIndex;
                     pPage.Value = chunk.PageNumber;
+                    pPaginated.Value = chunk.IsPaginated ? 1 : 0;
                     pEmbed.Value = EmbeddingToBlob(chunk.Embedding!);
                     cmd.ExecuteNonQuery();
                 }
@@ -726,6 +778,7 @@ public class ProfileRepository : IDisposable
         Text = reader.GetString(reader.GetOrdinal("text")),
         ChunkIndex = reader.GetInt32(reader.GetOrdinal("chunk_index")),
         PageNumber = reader.GetInt32(reader.GetOrdinal("page_number")),
+        IsPaginated = reader.GetInt32(reader.GetOrdinal("is_paginated")) == 1,
         Embedding = BlobToEmbedding((byte[])reader.GetValue(reader.GetOrdinal("embedding")))
     };
 

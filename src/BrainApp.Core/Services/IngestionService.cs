@@ -6,6 +6,7 @@ using Microsoft.Extensions.Options;
 using Serilog;
 using UglyToad.PdfPig;
 using UglyToad.PdfPig.Content;
+using UglyToad.PdfPig.Exceptions;
 using DocumentFormat.OpenXml.Packaging;
 using DocumentFormat.OpenXml.Presentation;
 using BrainApp.Core.Config;
@@ -111,8 +112,10 @@ public class IngestionService
 
             progress?.Report((2, "Chunking content...", 30));
 
-            // Chunk the text
-            var chunks = ChunkText(text, document.Id, profileId, fileInfo.Name);
+            // Chunk the text. Only PDFs carry true page numbers (injected via "[Page N]" markers
+            // during parsing); for every other format we fall back to a synthesized section index.
+            var isPaginated = extension == ".pdf";
+            var chunks = ChunkText(text, document.Id, profileId, fileInfo.Name, isPaginated);
             document.ChunkCount = chunks.Count;
 
             if (chunks.Count == 0)
@@ -204,20 +207,34 @@ public class IngestionService
 
         await Task.Run(() =>
         {
-            using var doc = PdfDocument.Open(path);
-            pageCount = doc.NumberOfPages;
-            foreach (var page in doc.GetPages())
+            var options = new ParsingOptions { Password = "", UseLenientParsing = true };
+            UglyToad.PdfPig.PdfDocument doc;
+            try
             {
-                // Sort words by position (top→bottom, left→right) so the extracted text
-                // matches reading order. page.Text uses PDF stream order which is often
-                // scrambled in scanned/OCR'd PDFs, breaking both keyword and semantic search.
-                var words = page.GetWords()
-                    .OrderByDescending(w => w.BoundingBox.Bottom)
-                    .ThenBy(w => w.BoundingBox.Left)
-                    .Select(w => w.Text);
-                var text = string.Join(" ", words);
-                if (!string.IsNullOrWhiteSpace(text))
-                    sb.AppendLine($"[Page {page.Number}] {text}");
+                doc = PdfDocument.Open(path, options);
+            }
+            catch (PdfDocumentEncryptedException ex)
+            {
+                throw new InvalidOperationException(
+                    $"PDF is encrypted or password-protected and cannot be indexed: {Path.GetFileName(path)}", ex);
+            }
+
+            using (doc)
+            {
+                pageCount = doc.NumberOfPages;
+                foreach (var page in doc.GetPages())
+                {
+                    // Sort words by position (top→bottom, left→right) so the extracted text
+                    // matches reading order. page.Text uses PDF stream order which is often
+                    // scrambled in scanned/OCR'd PDFs, breaking both keyword and semantic search.
+                    var words = page.GetWords()
+                        .OrderByDescending(w => w.BoundingBox.Bottom)
+                        .ThenBy(w => w.BoundingBox.Left)
+                        .Select(w => w.Text);
+                    var text = string.Join(" ", words);
+                    if (!string.IsNullOrWhiteSpace(text))
+                        sb.AppendLine($"[Page {page.Number}] {text}");
+                }
             }
         }, ct);
 
@@ -332,13 +349,15 @@ public class IngestionService
 
     /// <summary>
     /// Split text into chunks of ChunkSize with ChunkOverlap, snapping to sentence boundaries.
+    /// When <paramref name="isPaginated"/> is false, PageNumber is a 1-based section index
+    /// (the chunk's own position) and IsPaginated is false so callers can render
+    /// "[file, section N]" instead of "page N".
     /// </summary>
-    private List<DocumentChunk> ChunkText(string text, string documentId, string profileId, string fileName)
+    private List<DocumentChunk> ChunkText(string text, string documentId, string profileId, string fileName, bool isPaginated)
     {
         var chunks = new List<DocumentChunk>();
         var sentences = SplitIntoSentences(text);
         var sb = new StringBuilder();
-        var startIndex = 0;
         int chunkIndex = 0;
 
         foreach (var sentence in sentences)
@@ -353,9 +372,11 @@ public class IngestionService
                     ProfileId = profileId,
                     FileName = fileName,
                     Text = sb.ToString().Trim(),
-                    ChunkIndex = chunkIndex++,
-                    PageNumber = ExtractPageNumber(sb.ToString())
+                    ChunkIndex = chunkIndex,
+                    PageNumber = isPaginated ? ExtractPageNumber(sb.ToString()) : chunkIndex + 1,
+                    IsPaginated = isPaginated
                 });
+                chunkIndex++;
 
                 // Keep overlap
                 var overlapText = sb.ToString();
@@ -379,7 +400,8 @@ public class IngestionService
                 FileName = fileName,
                 Text = sb.ToString().Trim(),
                 ChunkIndex = chunkIndex,
-                PageNumber = ExtractPageNumber(sb.ToString())
+                PageNumber = isPaginated ? ExtractPageNumber(sb.ToString()) : chunkIndex + 1,
+                IsPaginated = isPaginated
             });
         }
 

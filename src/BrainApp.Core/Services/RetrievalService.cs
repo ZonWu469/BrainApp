@@ -182,6 +182,9 @@ public class RetrievalService
     /// </summary>
     public Task LoadIndexAsync(string profileId, string appDataFolder)
     {
+        if (_index.ContainsKey(profileId))
+            return Task.CompletedTask;
+
         MigrateFromIndexBin(profileId, appDataFolder);
 
         var chunks = _profileRepo.GetChunksByProfile(profileId);

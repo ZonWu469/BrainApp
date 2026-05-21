@@ -471,7 +471,7 @@ public class ChatService
     private static string BuildRagUserPrompt(string ragContext, string question)
     {
         var langPin = DetectLanguageDirective(question);
-        return $"{langPin}Answer using ONLY the context provided. Always cite sources as [filename, page N]. If the context does not contain enough information, say so clearly.\n\nContext:\n{ragContext}\n\nQuestion: {question}\n\n{langPin}Write your entire answer in the SAME language as the Question above. Do NOT translate or repeat the answer in any other language. Output the answer once, in one language only.";
+        return $"{langPin}Answer using ONLY the context provided. Cite sources exactly as shown in the context header — either [filename, page N] or [filename, section N]. If the context does not contain enough information, say so clearly.\n\nContext:\n{ragContext}\n\nQuestion: {question}\n\n{langPin}Write your entire answer in the SAME language as the Question above. Do NOT translate or repeat the answer in any other language. Output the answer once, in one language only.";
     }
 
     private static string BuildRoutingUserPrompt(string ragContext, string question)
@@ -486,7 +486,7 @@ public class ChatService
                 : "The user message does NOT contain a URL — do NOT emit any JSON. Answer in natural language from the documents and conversation history.\n") +
             $"Do NOT call fetch_page if the user question can be answered from prior messages in this chat.\n" +
             $"If you do emit JSON, output ONLY the JSON object (no markdown fences, no commentary before or after).\n" +
-            $"Otherwise answer using the context below and conversation history, citing document sources as [filename, page N].\n\n" +
+            $"Otherwise answer using the context below and conversation history, citing document sources exactly as shown in the context header — either [filename, page N] or [filename, section N].\n\n" +
             $"Context:\n{ragContext}\n\nQuestion: {question}\n\n{langPin}";
     }
 
@@ -521,7 +521,7 @@ public class ChatService
 
     private static string BuildFinalUserPrompt(string ragContext, string question, string skillResult) =>
         $"A skill was executed and returned the following result:\n\n{skillResult}\n\n" +
-        $"Use this result together with the document context to answer the user. Cite document sources as [filename, page N] where relevant.\n\n" +
+        $"Use this result together with the document context to answer the user. Cite document sources exactly as shown in the context header — either [filename, page N] or [filename, section N] — where relevant.\n\n" +
         $"Context:\n{ragContext}\n\nOriginal question: {question}";
 
     private static List<(MessageRole, string)> BuildHistory(ChatSession? session)
@@ -554,6 +554,7 @@ public class ChatService
                 FileName = r.Chunk.FileName,
                 FilePath = filePath ?? string.Empty,
                 PageNumber = r.Chunk.PageNumber,
+                CitationUnit = r.Chunk.IsPaginated ? "page" : "section",
                 Excerpt = r.Chunk.Text.Length > 120 ? r.Chunk.Text[..120] + "..." : r.Chunk.Text,
                 RelevanceScore = r.Score
             };
@@ -613,7 +614,8 @@ public class ChatService
         for (int i = 0; i < chunks.Count; i++)
         {
             var r = chunks[i];
-            sb.AppendLine($"[{i + 1}] [{r.Chunk.FileName}, page {r.Chunk.PageNumber}]");
+            var unit = r.Chunk.IsPaginated ? "page" : "section";
+            sb.AppendLine($"[{i + 1}] [{r.Chunk.FileName}, {unit} {r.Chunk.PageNumber}]");
             sb.AppendLine(r.Chunk.Text);
             sb.AppendLine();
         }
