@@ -16,6 +16,7 @@ public partial class MainWindow : Window
     public MainWindow(MainWindowViewModel viewModel) : this()
     {
         DataContext = viewModel;
+        Closing += (_, _) => viewModel.PersistUiState();
     }
 
     private void OpenSettingsButton_Click(object? sender, RoutedEventArgs e)

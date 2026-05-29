@@ -53,9 +53,14 @@ public class ChatService
         var retrieved = await _retrieval.RetrieveAsync(profile.Id, question, ct: ct);
         var citations = BuildCitations(profile.Id, retrieved);
 
-        var cachedAnswer = _cache.GetAnswer(profile.Id, normalized);
-        Log.Information("Chat: profile={ProfileId} cacheHit={Hit} citations={Count}",
-            profile.Id, cachedAnswer != null, citations.Count);
+        // Cache scope: per (profileId, sessionId). Bypass entirely when there is no
+        // session, or when the session already has prior turns — in a live chat we
+        // always regenerate so answers reflect the evolved conversation.
+        var cachedAnswer = CanReadCache(session)
+            ? _cache.GetAnswer(profile.Id, session!.Id, normalized)
+            : null;
+        Log.Information("Chat: profile={ProfileId} session={SessionId} cacheHit={Hit} citations={Count}",
+            profile.Id, session?.Id ?? "(none)", cachedAnswer != null, citations.Count);
         if (cachedAnswer != null)
         {
             sw.Stop();
@@ -71,10 +76,10 @@ public class ChatService
             };
         }
 
-        var history = BuildHistory(session);
-        var ragContext = BuildContextBlock(retrieved);
+        var rawHistory = BuildHistory(session);
         var enabledSkills = _skillCatalog.GetEnabledMethods(profile.Id);
         var systemPrompt = BuildSystemPrompt(profile.SystemPrompt, enabledSkills);
+        var (history, ragContext) = PrepareContext(systemPrompt, rawHistory, retrieved, question);
 
         string answer;
         bool skillUsed = false;
@@ -135,8 +140,8 @@ public class ChatService
         var outputTokens = _llama.CountTokens(answer);
         var tokenStats = new TokenStats(inputTokens, outputTokens, inputTokens + outputTokens, _llamaSettings.ContextSize);
 
-        if (!skillUsed)
-            _cache.SetAnswer(profile.Id, normalized, answer);
+        if (!skillUsed && session != null)
+            _cache.SetAnswer(profile.Id, session.Id, normalized, answer);
 
         var message = new ChatMessage
         {
@@ -181,14 +186,20 @@ public class ChatService
         onStatus?.Invoke("Searching documents...");
         var retrieved = await _retrieval.RetrieveAsync(profile.Id, question, ct: ct);
         var citations = BuildCitations(profile.Id, retrieved);
-        onStatus?.Invoke($"Found {citations.Count} source{(citations.Count == 1 ? "" : "s")}");
+        var indexedChunks = _retrieval.GetChunkCount(profile.Id);
+        if (citations.Count == 0 && indexedChunks > 0)
+            onStatus?.Invoke($"No matching passages ({indexedChunks} chunks indexed)");
+        else
+            onStatus?.Invoke($"Found {citations.Count} source{(citations.Count == 1 ? "" : "s")} ({indexedChunks} chunks indexed)");
 
         if (onCitations != null)
             await onCitations(citations);
 
-        var cachedAnswer = _cache.GetAnswer(profile.Id, normalized);
-        Log.Information("Chat: profile={ProfileId} cacheHit={Hit} citations={Count}",
-            profile.Id, cachedAnswer != null, citations.Count);
+        var cachedAnswer = CanReadCache(session)
+            ? _cache.GetAnswer(profile.Id, session!.Id, normalized)
+            : null;
+        Log.Information("Chat: profile={ProfileId} session={SessionId} cacheHit={Hit} citations={Count}",
+            profile.Id, session?.Id ?? "(none)", cachedAnswer != null, citations.Count);
         if (cachedAnswer != null)
         {
             onStatus?.Invoke("Answer from cache");
@@ -200,10 +211,10 @@ public class ChatService
             yield break;
         }
 
-        var history = BuildHistory(session);
-        var ragContext = BuildContextBlock(retrieved);
+        var rawHistory = BuildHistory(session);
         var enabledSkills = _skillCatalog.GetEnabledMethods(profile.Id);
         var systemPrompt = BuildSystemPrompt(profile.SystemPrompt, enabledSkills);
+        var (history, ragContext) = PrepareContext(systemPrompt, rawHistory, retrieved, question);
 
         string userPrompt;
         bool skillUsed = false;
@@ -248,8 +259,8 @@ public class ChatService
                         yield return word + " ";
                         if (ct.IsCancellationRequested) yield break;
                     }
-                    if (!skillUsed)
-                        _cache.SetAnswer(profile.Id, normalized, routingResponse);
+                    if (!skillUsed && session != null)
+                        _cache.SetAnswer(profile.Id, session.Id, normalized, routingResponse);
                     yield break;
                 }
             }
@@ -343,8 +354,8 @@ public class ChatService
         onTokenStats?.Invoke(new TokenStats(inputTokens, outputTokenCount, inputTokens + outputTokenCount, _llamaSettings.ContextSize));
 
         var finalAnswer = SanitizeAnswer(TruncateAtMarker(cleanAccum.ToString()));
-        if (!skillUsed)
-            _cache.SetAnswer(profile.Id, normalized, finalAnswer);
+        if (!skillUsed && session != null)
+            _cache.SetAnswer(profile.Id, session.Id, normalized, finalAnswer);
     }
 
     public async Task<ExtractionResult> ExtractJsonAsync(
@@ -524,22 +535,50 @@ public class ChatService
         $"Use this result together with the document context to answer the user. Cite document sources exactly as shown in the context header — either [filename, page N] or [filename, section N] — where relevant.\n\n" +
         $"Context:\n{ragContext}\n\nOriginal question: {question}";
 
-    private static List<(MessageRole, string)> BuildHistory(ChatSession? session)
+    // Cache reads are permitted only on the very first turn of a real session.
+    // Sessionless callers (no ChatSession) never read the cache; ongoing chats
+    // (history non-empty) always regenerate so the answer reflects the current
+    // conversation. Writes are still allowed for any real session (see call sites).
+    private static bool CanReadCache(ChatSession? session)
+        => session != null && session.Messages.Count == 0;
+
+    private List<(MessageRole, string)> BuildHistory(ChatSession? session)
     {
         var history = new List<(MessageRole, string)>();
         if (session == null) return history;
 
-        var recentMessages = session.Messages
+        // Walk newest -> oldest, accumulating an estimated token cost. Stop when the
+        // running total would exceed HistoryTokenBudget. Always keep at least the most
+        // recent message even if it alone blows the budget (layer B will trim further).
+        var newestFirst = session.Messages
             .OrderByDescending(m => m.CreatedAt)
             .Take(MaxHistoryTurns * 2)
-            .Reverse()
             .ToList();
 
-        foreach (var msg in recentMessages)
+        int budget = _llamaSettings.HistoryTokenBudget;
+        int runningTokens = 0;
+        var kept = new List<ChatMessage>();
+        foreach (var msg in newestFirst)
+        {
+            int est = EstimateTokens(msg.Content);
+            if (kept.Count > 0 && runningTokens + est > budget)
+                break;
+            kept.Add(msg);
+            runningTokens += est;
+        }
+
+        kept.Reverse();
+        foreach (var msg in kept)
             history.Add((msg.Role, msg.Content));
 
         return history;
     }
+
+    // Fast char-based token estimate (~4 chars/token for typical text). Avoids the
+    // per-call CreateContext cost of LlamaService.CountTokens during shaping; layer B
+    // uses the real tokenizer for the final budget verification.
+    private static int EstimateTokens(string? text) =>
+        string.IsNullOrEmpty(text) ? 0 : (text.Length + 3) / 4;
 
     private List<ChunkCitation> BuildCitations(string profileId, List<RetrievedChunk> retrieved)
     {
@@ -610,16 +649,239 @@ public class ChatService
 
     private static string BuildContextBlock(List<RetrievedChunk> chunks)
     {
+        var ordered = ReorderForEdges(chunks);
         var sb = new System.Text.StringBuilder();
-        for (int i = 0; i < chunks.Count; i++)
+        for (int i = 0; i < ordered.Count; i++)
         {
-            var r = chunks[i];
+            var r = ordered[i];
             var unit = r.Chunk.IsPaginated ? "page" : "section";
             sb.AppendLine($"[{i + 1}] [{r.Chunk.FileName}, {unit} {r.Chunk.PageNumber}]");
             sb.AppendLine(r.Chunk.Text);
             sb.AppendLine();
         }
         return sb.ToString();
+    }
+
+    /// <summary>
+    /// Mitigate "lost-in-the-middle": given chunks sorted by relevance (best first), place the
+    /// most relevant at the start and the next-most at the very end, with the rest in between.
+    /// Small models attend most strongly to the edges of the context.
+    /// </summary>
+    internal static List<RetrievedChunk> ReorderForEdges(List<RetrievedChunk> chunks)
+    {
+        if (chunks.Count <= 2) return chunks;
+        var front = new List<RetrievedChunk>();
+        var back = new List<RetrievedChunk>();
+        for (int i = 0; i < chunks.Count; i++)
+            (i % 2 == 0 ? front : back).Add(chunks[i]);
+        back.Reverse();
+        front.AddRange(back);
+        return front;
+    }
+
+    // A.1 + A.2 + A.3 — always-on context shaping. Returns a copy of `retrieved` with
+    // (a) low-score and below-dropoff chunks removed,
+    // (b) near-duplicate chunks removed,
+    // (c) each surviving chunk's Text truncated to MaxChunkTokens.
+    // Original retrieved list is not mutated (we clone DocumentChunk for text trimming).
+    private List<RetrievedChunk> ShapeChunks(List<RetrievedChunk> retrieved)
+    {
+        if (retrieved.Count == 0) return retrieved;
+
+        // A.1 score filter + dropoff
+        double topScore = retrieved[0].Score;
+        double minAbsolute = _llamaSettings.MinChunkScore;
+        double minRelative = topScore * _llamaSettings.ScoreDropoffRatio;
+        var byScore = new List<RetrievedChunk>();
+        foreach (var r in retrieved)
+        {
+            if (r.Score < minAbsolute) break;          // list is sorted desc
+            if (byScore.Count > 0 && r.Score < minRelative) break;
+            byScore.Add(r);
+        }
+        if (byScore.Count == 0) byScore.Add(retrieved[0]); // never produce empty context
+
+        // A.2 near-duplicate dedup (same (DocId, Page) OR first-200-char prefix already kept)
+        var deduped = new List<RetrievedChunk>();
+        var keyFingerprints = new List<string>();
+        foreach (var r in byScore)
+        {
+            string key = r.Chunk.DocumentId + "|" + r.Chunk.PageNumber;
+            string head = NormalizeForDedup(r.Chunk.Text, 200);
+            bool dup = false;
+            for (int i = 0; i < deduped.Count; i++)
+            {
+                if (keyFingerprints[i].StartsWith(key + "||", StringComparison.Ordinal))
+                {
+                    dup = true; break;
+                }
+                var keptHead = keyFingerprints[i][(keyFingerprints[i].IndexOf("||", StringComparison.Ordinal) + 2)..];
+                if (head.Length >= 40 && (keptHead.Contains(head, StringComparison.Ordinal) || head.Contains(keptHead, StringComparison.Ordinal)))
+                {
+                    dup = true; break;
+                }
+            }
+            if (dup) continue;
+            deduped.Add(r);
+            keyFingerprints.Add(key + "||" + head);
+        }
+
+        // A.3 per-chunk token cap (estimate-based: ~4 chars/token)
+        int maxChars = Math.Max(200, _llamaSettings.MaxChunkTokens * 4);
+        var shaped = new List<RetrievedChunk>(deduped.Count);
+        foreach (var r in deduped)
+            shaped.Add(CapChunk(r, maxChars));
+
+        return shaped;
+    }
+
+    private static RetrievedChunk CapChunk(RetrievedChunk r, int maxChars)
+    {
+        var text = r.Chunk.Text ?? string.Empty;
+        if (text.Length <= maxChars) return r;
+
+        // Truncate at the last sentence boundary before maxChars, else hard-cut.
+        int cut = maxChars;
+        int sentenceEnd = text.LastIndexOfAny(new[] { '.', '!', '?', '\n' }, Math.Min(maxChars - 1, text.Length - 1));
+        if (sentenceEnd > maxChars / 2) cut = sentenceEnd + 1;
+        var truncated = text[..cut].TrimEnd() + " …[trimmed]";
+
+        return new RetrievedChunk
+        {
+            Chunk = new DocumentChunk
+            {
+                Id = r.Chunk.Id,
+                DocumentId = r.Chunk.DocumentId,
+                ProfileId = r.Chunk.ProfileId,
+                FileName = r.Chunk.FileName,
+                Text = truncated,
+                ChunkIndex = r.Chunk.ChunkIndex,
+                PageNumber = r.Chunk.PageNumber,
+                IsPaginated = r.Chunk.IsPaginated,
+                Embedding = r.Chunk.Embedding
+            },
+            Score = r.Score,
+            SemanticScore = r.SemanticScore
+        };
+    }
+
+    private static string NormalizeForDedup(string s, int max)
+    {
+        if (string.IsNullOrEmpty(s)) return string.Empty;
+        var head = s.Length > max ? s[..max] : s;
+        var sb = new System.Text.StringBuilder(head.Length);
+        bool lastSpace = false;
+        foreach (var c in head)
+        {
+            if (char.IsWhiteSpace(c))
+            {
+                if (!lastSpace) sb.Append(' ');
+                lastSpace = true;
+            }
+            else
+            {
+                sb.Append(char.ToLowerInvariant(c));
+                lastSpace = false;
+            }
+        }
+        return sb.ToString().Trim();
+    }
+
+    // Layer B — reactive trim. Input budget reserves room for generation via MaxTokens at
+    // inference time; do not subtract MaxTokens from the input budget here.
+    internal (List<(MessageRole, string)> History, List<RetrievedChunk> Chunks) TrimToBudget(
+        string systemPrompt,
+        List<(MessageRole, string)> history,
+        List<RetrievedChunk> chunks,
+        string question)
+    {
+        int budget = _llamaSettings.ContextSize - _llamaSettings.SafetyMargin;
+        if (budget <= 0) return (history, chunks);
+
+        int ragReservation = chunks.Count > 0
+            ? Math.Min(_llamaSettings.RagTokenBudget, Math.Max(budget / 3, 400))
+            : 0;
+
+        int Measure(List<(MessageRole, string)> h, List<RetrievedChunk> c)
+        {
+            var rag = BuildContextBlock(c);
+            var concat = systemPrompt + string.Join("\n", h.Select(t => t.Item2)) + rag + question;
+            return _llama.CountTokens(concat);
+        }
+
+        int MeasureRagOnly(List<RetrievedChunk> c) =>
+            _llama.CountTokens(BuildContextBlock(c));
+
+        var workHist = new List<(MessageRole, string)>(history);
+        var workChunks = new List<RetrievedChunk>(chunks);
+
+        int total = Measure(workHist, workChunks);
+        if (total <= budget) return (workHist, workChunks);
+
+        int initialChunks = workChunks.Count;
+        int initialHist = workHist.Count;
+
+        // B.1 drop oldest history pairs (keep at least the last user+assistant pair)
+        while (total > budget && workHist.Count > 2)
+        {
+            int drop = Math.Min(2, workHist.Count - 2);
+            workHist.RemoveRange(0, drop);
+            total = Measure(workHist, workChunks);
+        }
+
+        // B.2 drop lowest-score (trailing) chunks but keep enough RAG to meet reservation
+        while (total > budget && workChunks.Count > 1)
+        {
+            if (ragReservation > 0 && workChunks.Count <= 1)
+                break;
+            if (ragReservation > 0 && MeasureRagOnly(workChunks) <= ragReservation && workChunks.Count <= 2)
+                break;
+            workChunks.RemoveAt(workChunks.Count - 1);
+            total = Measure(workHist, workChunks);
+        }
+
+        // B.3 tighten per-chunk cap on remaining chunks (halve until fits or min reached)
+        int tighterCap = Math.Max(200, _llamaSettings.MaxChunkTokens * 4);
+        while (total > budget && tighterCap > 400)
+        {
+            if (ragReservation > 0 && MeasureRagOnly(workChunks) <= ragReservation)
+                break;
+            tighterCap /= 2;
+            for (int i = 0; i < workChunks.Count; i++)
+                workChunks[i] = CapChunk(workChunks[i], tighterCap);
+            total = Measure(workHist, workChunks);
+        }
+
+        if (total > budget)
+        {
+            Log.Warning(
+                "Reactive trim: prompt still ~{Tokens} tokens over budget {Budget} (hist {Hist}/{HistInit}, chunks {Chunks}/{ChunksInit}, ragReservation {RagRes})",
+                total - budget, budget, workHist.Count, initialHist, workChunks.Count, initialChunks, ragReservation);
+        }
+        else
+        {
+            Log.Information(
+                "Reactive trim: kept {Hist}/{HistInit} history msgs, {Chunks}/{ChunksInit} chunks (~{Tokens} tokens, budget {Budget})",
+                workHist.Count, initialHist, workChunks.Count, initialChunks, total, budget);
+        }
+
+        return (workHist, workChunks);
+    }
+
+    // Combined entry: shape + reactive trim. Returns (history, ragContext) ready to feed.
+    private (List<(MessageRole, string)> History, string RagContext) PrepareContext(
+        string systemPrompt,
+        List<(MessageRole, string)> history,
+        List<RetrievedChunk> retrieved,
+        string question)
+    {
+        var shaped = ShapeChunks(retrieved);
+        Log.Information("Context shaped: {Kept}/{Total} chunks, {HistTurns} history msgs (~{Tokens} est tokens)",
+            shaped.Count, retrieved.Count, history.Count,
+            EstimateTokens(systemPrompt) + history.Sum(h => EstimateTokens(h.Item2)) + shaped.Sum(c => EstimateTokens(c.Chunk.Text)) + EstimateTokens(question));
+
+        var (trimmedHist, trimmedChunks) = TrimToBudget(systemPrompt, history, shaped, question);
+        return (trimmedHist, BuildContextBlock(trimmedChunks));
     }
 
     private static readonly string[] StopMarkers = {

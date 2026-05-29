@@ -7,6 +7,9 @@ using Serilog;
 using UglyToad.PdfPig;
 using UglyToad.PdfPig.Content;
 using UglyToad.PdfPig.Exceptions;
+using Docnet.Core;
+using Docnet.Core.Models;
+using Docnet.Core.Readers;
 using DocumentFormat.OpenXml.Packaging;
 using DocumentFormat.OpenXml.Presentation;
 using BrainApp.Core.Config;
@@ -26,6 +29,7 @@ public class IngestionService
     private readonly ProfileRepository _profileRepo;
     private readonly RetrievalSettings _retrievalSettings;
     private readonly StorageSettings _storageSettings;
+    private readonly LlamaSettings _llamaSettings;
 
     public IngestionService(
         LlamaService llama,
@@ -33,7 +37,8 @@ public class IngestionService
         RetrievalService retrieval,
         ProfileRepository profileRepo,
         IOptions<RetrievalSettings> retrievalSettings,
-        IOptions<StorageSettings> storageSettings)
+        IOptions<StorageSettings> storageSettings,
+        IOptions<LlamaSettings> llamaSettings)
     {
         _llama = llama;
         _cache = cache;
@@ -41,6 +46,7 @@ public class IngestionService
         _profileRepo = profileRepo;
         _retrievalSettings = retrievalSettings.Value;
         _storageSettings = storageSettings.Value;
+        _llamaSettings = llamaSettings.Value;
     }
 
     /// <summary>
@@ -145,6 +151,7 @@ public class IngestionService
 
             // New content landed — invalidate cached answers so the next query reflects it.
             _cache.InvalidateProfile(profileId);
+            _profileRepo.SetProfileEmbeddingModel(profileId, _llamaSettings.EmbeddingModelFile);
 
             progress?.Report((5, "Complete", 100));
             sw.Stop();
@@ -200,10 +207,11 @@ public class IngestionService
         };
     }
 
-    private static async Task<(string text, int pageCount)> ParsePdfAsync(string path, CancellationToken ct)
+    private async Task<(string text, int pageCount)> ParsePdfAsync(string path, CancellationToken ct)
     {
         var sb = new StringBuilder();
         int pageCount = 0;
+        bool encrypted = false;
 
         await Task.Run(() =>
         {
@@ -213,10 +221,10 @@ public class IngestionService
             {
                 doc = PdfDocument.Open(path, options);
             }
-            catch (PdfDocumentEncryptedException ex)
+            catch (PdfDocumentEncryptedException)
             {
-                throw new InvalidOperationException(
-                    $"PDF is encrypted or password-protected and cannot be indexed: {Path.GetFileName(path)}", ex);
+                encrypted = true;
+                return;
             }
 
             using (doc)
@@ -238,7 +246,125 @@ public class IngestionService
             }
         }, ct);
 
+        if (encrypted)
+        {
+            if (!OperatingSystem.IsWindows())
+                throw new InvalidOperationException(
+                    $"PDF is encrypted or password-protected and cannot be indexed (PDFium+OCR fallback is Windows-only): {Path.GetFileName(path)}");
+            Log.Information("PdfPig could not decrypt {File}; falling back to PDFium+OCR", Path.GetFileName(path));
+            return await ParsePdfWithOcrAsync(path, ct);
+        }
+
         return (sb.ToString(), pageCount);
+    }
+
+    /// <summary>
+    /// Fallback for PDFs PdfPig can't decrypt but PDFium can (e.g. AES-256 ISO 32000-2 with
+    /// empty user password — the same set Edge opens without prompting). Rasterizes each page
+    /// at 200 DPI via Docnet.Core/PDFium, runs Tesseract OCR on the bitmap, and emits the
+    /// usual [Page N] markers so downstream chunking treats the result as paginated.
+    /// </summary>
+    [System.Runtime.Versioning.SupportedOSPlatform("windows")]
+    private async Task<(string text, int pageCount)> ParsePdfWithOcrAsync(string path, CancellationToken ct)
+    {
+        if (!TryCreateTesseractEngine(out var engine, out var reason))
+        {
+            throw new InvalidOperationException(
+                $"PDF is encrypted or password-protected and cannot be indexed (OCR fallback unavailable: {reason}): {Path.GetFileName(path)}");
+        }
+
+        var sb = new StringBuilder();
+        int pageCount = 0;
+
+        try
+        {
+            await Task.Run(() =>
+            {
+                IDocReader docReader;
+                try
+                {
+                    // 1654x2339 ≈ A4 @ 200 DPI — good OCR/perf tradeoff.
+                    docReader = DocLib.Instance.GetDocReader(path, new PageDimensions(1654, 2339));
+                }
+                catch (Exception ex)
+                {
+                    throw new InvalidOperationException(
+                        $"PDF is encrypted or password-protected and cannot be indexed (PDFium also failed: {ex.Message}): {Path.GetFileName(path)}", ex);
+                }
+
+                using (docReader)
+                {
+                    pageCount = docReader.GetPageCount();
+                    if (pageCount > 50)
+                        Log.Warning("OCR fallback for {File}: {Pages} pages, expect a slow index", Path.GetFileName(path), pageCount);
+
+                    for (int i = 0; i < pageCount; i++)
+                    {
+                        ct.ThrowIfCancellationRequested();
+                        using var pageReader = docReader.GetPageReader(i);
+                        var width = pageReader.GetPageWidth();
+                        var height = pageReader.GetPageHeight();
+                        var bgra = pageReader.GetImage();
+                        var pngBytes = BgraToPng(bgra, width, height);
+
+                        using var pix = Tesseract.Pix.LoadFromMemory(pngBytes);
+                        using var ocrPage = engine!.Process(pix);
+                        var text = ocrPage.GetText();
+                        if (!string.IsNullOrWhiteSpace(text))
+                            sb.AppendLine($"[Page {i + 1}] {text.Trim()}");
+                    }
+                }
+            }, ct);
+        }
+        finally
+        {
+            engine?.Dispose();
+        }
+
+        return (sb.ToString(), pageCount);
+    }
+
+    [System.Runtime.Versioning.SupportedOSPlatform("windows")]
+    private static byte[] BgraToPng(byte[] bgra, int width, int height)
+    {
+        using var bmp = new System.Drawing.Bitmap(width, height, System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+        var rect = new System.Drawing.Rectangle(0, 0, width, height);
+        var data = bmp.LockBits(rect, System.Drawing.Imaging.ImageLockMode.WriteOnly, bmp.PixelFormat);
+        try
+        {
+            System.Runtime.InteropServices.Marshal.Copy(bgra, 0, data.Scan0, bgra.Length);
+        }
+        finally
+        {
+            bmp.UnlockBits(data);
+        }
+        using var ms = new MemoryStream();
+        bmp.Save(ms, System.Drawing.Imaging.ImageFormat.Png);
+        return ms.ToArray();
+    }
+
+    private bool TryCreateTesseractEngine(out Tesseract.TesseractEngine? engine, out string? reason)
+    {
+        engine = null;
+        reason = null;
+        var tessDataPath = Path.Combine(AppContext.BaseDirectory, "tessdata");
+        if (!Directory.Exists(tessDataPath))
+        {
+            reason = $"tessdata folder not found at {tessDataPath}";
+            Log.Warning("tessdata folder not found at {Path}. OCR disabled. Install eng.traineddata for image/encrypted-PDF indexing.", tessDataPath);
+            return false;
+        }
+        try
+        {
+            engine = new Tesseract.TesseractEngine(tessDataPath, _retrievalSettings.OcrLanguages, Tesseract.EngineMode.Default);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            reason = ex.Message;
+            Log.Warning(ex, "Failed to create Tesseract engine");
+            return false;
+        }
     }
 
     private static async Task<(string text, int pageCount)> ParsePptxAsync(string path, CancellationToken ct)
@@ -324,21 +450,18 @@ public class IngestionService
 
     private async Task<(string text, int pageCount)> ParseImageAsync(string path, CancellationToken ct)
     {
-        // Tesseract OCR — graceful fallback if tessdata missing
-        var tessDataPath = Path.Combine(AppContext.BaseDirectory, "tessdata");
-        if (!Directory.Exists(tessDataPath))
-        {
-            Log.Warning("tessdata folder not found at {Path}. OCR disabled. Install eng.traineddata for image indexing.", tessDataPath);
-            return ($"[Image: {Path.GetFileName(path)} — install tessdata for OCR]", 1);
-        }
+        if (!TryCreateTesseractEngine(out var engine, out var reason))
+            return ($"[Image: {Path.GetFileName(path)} — {reason}]", 1);
 
         try
         {
-            using var engine = new Tesseract.TesseractEngine(tessDataPath, _retrievalSettings.OcrLanguages, Tesseract.EngineMode.Default);
-            using var img = Tesseract.Pix.LoadFromFile(path);
-            using var page = engine.Process(img);
-            var text = page.GetText();
-            return (text, 1);
+            using (engine)
+            {
+                using var img = Tesseract.Pix.LoadFromFile(path);
+                using var page = engine!.Process(img);
+                var text = page.GetText();
+                return (text, 1);
+            }
         }
         catch (Exception ex)
         {

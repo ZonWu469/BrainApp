@@ -7,8 +7,10 @@ using System.Threading.Tasks;
 using Avalonia.Threading;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
+using BrainApp.Core.Config;
 using BrainApp.Core.Models;
 using BrainApp.Core.Services;
+using Microsoft.Extensions.Options;
 
 namespace BrainApp.Desktop.ViewModels;
 
@@ -16,7 +18,10 @@ public partial class ChatViewModel : ObservableObject
 {
     private readonly ChatService _chatService;
     private readonly ProfileRepository _profileRepo;
+    private readonly LlamaSettings _llamaSettings;
     private CancellationTokenSource? _cts;
+    private string? _activeSessionId;
+    private bool _pendingNewChat;
 
     [ObservableProperty]
     [NotifyCanExecuteChangedFor(nameof(SendMessageCommand))]
@@ -42,10 +47,14 @@ public partial class ChatViewModel : ObservableObject
     [ObservableProperty]
     private string _tokenInfo = string.Empty;
 
-    public ChatViewModel(ChatService chatService, ProfileRepository profileRepo)
+    public ChatViewModel(
+        ChatService chatService,
+        ProfileRepository profileRepo,
+        IOptions<LlamaSettings> llamaSettings)
     {
         _chatService = chatService;
         _profileRepo = profileRepo;
+        _llamaSettings = llamaSettings.Value;
     }
 
     public void LoadProfile(Profile profile)
@@ -53,25 +62,60 @@ public partial class ChatViewModel : ObservableObject
         CurrentProfile = profile;
         Messages.Clear();
         StatusText = string.Empty;
+        _pendingNewChat = false;
 
-        // Load recent session
-        var sessions = _profileRepo.GetSessionHistory(profile.Id, limit: 1);
-        if (sessions.Count > 0)
+        _profileRepo.DeleteEmptySessions(profile.Id);
+
+        var storedEmbed = _profileRepo.GetProfileEmbeddingModel(profile.Id);
+        if (!string.IsNullOrEmpty(storedEmbed) &&
+            !storedEmbed.Equals(_llamaSettings.EmbeddingModelFile, StringComparison.OrdinalIgnoreCase))
         {
-            var session = sessions[0];
-            var msgs = _profileRepo.GetMessages(session.Id);
-            foreach (var msg in msgs)
-            {
-                Messages.Add(new ChatMessageViewModel
-                {
-                    Content = msg.Content,
-                    IsUser = msg.Role == MessageRole.User,
-                    FromCache = msg.FromCache,
-                    Citations = new ObservableCollection<ChunkCitation>(msg.Citations ?? new()),
-                    Timestamp = msg.CreatedAt
-                });
-            }
+            StatusText = "Documents were indexed with a different embedding model; re-index to restore search.";
         }
+
+        ChatSession? session = null;
+        var savedSessionId = _profileRepo.GetActiveSessionId(profile.Id);
+        if (!string.IsNullOrEmpty(savedSessionId))
+        {
+            var saved = _profileRepo.GetSession(savedSessionId);
+            if (saved != null && saved.ProfileId == profile.Id)
+                session = saved;
+        }
+
+        session ??= _profileRepo.GetLatestSessionWithMessages(profile.Id);
+
+        if (session != null)
+        {
+            _activeSessionId = session.Id;
+            LoadMessagesIntoUi(session.Id);
+        }
+        else
+        {
+            _activeSessionId = null;
+        }
+    }
+
+    private void LoadMessagesIntoUi(string sessionId)
+    {
+        var msgs = _profileRepo.GetMessages(sessionId);
+        foreach (var msg in msgs)
+        {
+            Messages.Add(new ChatMessageViewModel
+            {
+                Content = msg.Content,
+                IsUser = msg.Role == MessageRole.User,
+                FromCache = msg.FromCache,
+                Citations = new ObservableCollection<ChunkCitation>(msg.Citations ?? new()),
+                Timestamp = msg.CreatedAt
+            });
+        }
+    }
+
+    public void PersistUiState()
+    {
+        if (CurrentProfile == null) return;
+        if (!string.IsNullOrEmpty(_activeSessionId))
+            _profileRepo.SetActiveSessionId(CurrentProfile.Id, _activeSessionId);
     }
 
     [RelayCommand(CanExecute = nameof(CanSend))]
@@ -83,7 +127,6 @@ public partial class ChatViewModel : ObservableObject
         var question = InputText.Trim();
         InputText = string.Empty;
 
-        // Add user message
         var userMsg = new ChatMessageViewModel
         {
             Content = question,
@@ -92,7 +135,6 @@ public partial class ChatViewModel : ObservableObject
         };
         Messages.Add(userMsg);
 
-        // Add placeholder for assistant
         var assistantMsg = new ChatMessageViewModel
         {
             Content = string.Empty,
@@ -162,7 +204,6 @@ public partial class ChatViewModel : ObservableObject
                 assistantMsg.TokenDisplay = $"In: {lastTokenStats.InputTokens:N0} · Out: {lastTokenStats.OutputTokens:N0} · {sw.Elapsed.TotalSeconds:F1}s";
             }
 
-            // Save messages
             var assistantMsgModel = new ChatMessage
             {
                 Id = Guid.NewGuid().ToString("N")[..8],
@@ -176,6 +217,7 @@ public partial class ChatViewModel : ObservableObject
             if (!session.Messages.Any(m => m.Id == userMsgModel.Id))
                 session.Messages.Add(userMsgModel);
             _profileRepo.SaveMessages(session.Id, new[] { userMsgModel, assistantMsgModel });
+            _profileRepo.SetActiveSessionId(CurrentProfile.Id, session.Id);
         }
         catch (OperationCanceledException)
         {
@@ -193,15 +235,30 @@ public partial class ChatViewModel : ObservableObject
 
     private ChatSession GetOrCreateSessionWithMessages(string profileId)
     {
-        var latest = _profileRepo.GetSessionHistory(profileId, limit: 1).FirstOrDefault();
-        if (latest != null)
+        if (_pendingNewChat || string.IsNullOrEmpty(_activeSessionId))
         {
-            var loaded = _profileRepo.GetSession(latest.Id);
-            if (loaded != null)
-                return loaded;
+            var session = _profileRepo.CreateSession(profileId);
+            _activeSessionId = session.Id;
+            _pendingNewChat = false;
+            _profileRepo.SetActiveSessionId(profileId, session.Id);
+            return session;
         }
 
-        return _profileRepo.CreateSession(profileId);
+        var loaded = _profileRepo.GetSession(_activeSessionId);
+        if (loaded != null && loaded.ProfileId == profileId)
+            return loaded;
+
+        var fallback = _profileRepo.GetLatestSessionWithMessages(profileId);
+        if (fallback != null)
+        {
+            _activeSessionId = fallback.Id;
+            return fallback;
+        }
+
+        var created = _profileRepo.CreateSession(profileId);
+        _activeSessionId = created.Id;
+        _profileRepo.SetActiveSessionId(profileId, created.Id);
+        return created;
     }
 
     private bool CanSend() => !IsStreaming && !string.IsNullOrWhiteSpace(InputText) && CurrentProfile != null;
@@ -215,12 +272,12 @@ public partial class ChatViewModel : ObservableObject
     [RelayCommand]
     private void NewChat()
     {
-        if (CurrentProfile != null)
-        {
-            var session = _profileRepo.CreateSession(CurrentProfile.Id, "New chat");
-            Messages.Clear();
-            StatusText = "Started new chat";
-        }
+        if (CurrentProfile == null) return;
+
+        _activeSessionId = null;
+        _pendingNewChat = true;
+        Messages.Clear();
+        StatusText = "Started new chat";
     }
 
     [RelayCommand]
@@ -259,7 +316,7 @@ public partial class ChatViewModel : ObservableObject
     [RelayCommand]
     private void ClearChat()
     {
-        Messages.Clear();
+        NewChat();
     }
 
     [RelayCommand]

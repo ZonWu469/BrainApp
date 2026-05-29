@@ -10,8 +10,10 @@ namespace BrainApp.Core.Services;
 /// <summary>
 /// Two-layer in-memory cache for embeddings and query answers.
 /// Embedding cache: keyed by SHA256(text)[..16], 24h TTL
-/// Query cache: keyed by SHA256(profileId+generation+normalizedQuestion)[..20], 30min TTL
-/// Per-profile generation counter for cache invalidation.
+/// Query cache: keyed by SHA256(profileId+sessionId+generation+promptVersion+normalizedQuestion)[..20], 30min TTL.
+/// The sessionId scopes answers to a specific chat so a new chat in the same
+/// profile never serves another chat's cached answer.
+/// Per-profile generation counter for cache invalidation across all sessions of that profile.
 /// </summary>
 public class CacheService
 {
@@ -74,18 +76,20 @@ public class CacheService
     }
 
     /// <summary>
-    /// Get cached answer for a question if available and not expired.
+    /// Get cached answer for a question in a specific session if available and not expired.
+    /// sessionId scopes the cache: a different chat (different sessionId) in the same
+    /// profile will not see this entry.
     /// </summary>
-    public string? GetAnswer(string profileId, string normalizedQuestion)
+    public string? GetAnswer(string profileId, string sessionId, string normalizedQuestion)
     {
         if (!_settings.EnableQueryCache) return null;
 
-        var key = GetQueryKey(profileId, normalizedQuestion);
+        var key = GetQueryKey(profileId, sessionId, normalizedQuestion);
         if (_queryCache.TryGetValue(key, out var entry))
         {
             if (entry.expiresAt > DateTime.UtcNow)
             {
-                Log.Debug("Query cache HIT for profile: {ProfileId}", profileId);
+                Log.Debug("Query cache HIT for profile: {ProfileId}, session: {SessionId}", profileId, sessionId);
                 return entry.answer;
             }
             _queryCache.TryRemove(key, out _);
@@ -94,9 +98,9 @@ public class CacheService
     }
 
     /// <summary>
-    /// Store answer in cache with configured TTL.
+    /// Store answer in cache with configured TTL, scoped to a specific session.
     /// </summary>
-    public void SetAnswer(string profileId, string normalizedQuestion, string answer)
+    public void SetAnswer(string profileId, string sessionId, string normalizedQuestion, string answer)
     {
         if (!_settings.EnableQueryCache) return;
         if (_queryCache.Count >= _settings.MaxQueryEntries)
@@ -104,10 +108,11 @@ public class CacheService
             EvictExpiredQueries();
         }
 
-        var key = GetQueryKey(profileId, normalizedQuestion);
+        var key = GetQueryKey(profileId, sessionId, normalizedQuestion);
         var expiresAt = DateTime.UtcNow.AddMinutes(_settings.QueryTtlMinutes);
         _queryCache[key] = (answer, expiresAt);
-        Log.Debug("Query answer cached for profile: {ProfileId}, TTL: {TTL}m", profileId, _settings.QueryTtlMinutes);
+        Log.Debug("Query answer cached for profile: {ProfileId}, session: {SessionId}, TTL: {TTL}m",
+            profileId, sessionId, _settings.QueryTtlMinutes);
     }
 
     /// <summary>
@@ -164,12 +169,16 @@ public class CacheService
     // Bump PromptVersion whenever BuildSystemPrompt, BuildRagUserPrompt, or any
     // chat-template builder in LlamaService changes — otherwise stale cached
     // answers generated under the old prompts will keep being served.
-    public const string PromptVersion = "v3-2026-05";
+    // v4 introduces sessionId scoping; entries written under v3 (profile-scoped only)
+    // must not be served under the new keying.
+    // v5: reranking + IDF keyword scoring + edge-ordered context change which chunks/order
+    // reach the model, so answers differ from v4 and must not be served from the old cache.
+    public const string PromptVersion = "v5-2026-05";
 
-    private string GetQueryKey(string profileId, string normalizedQuestion)
+    private string GetQueryKey(string profileId, string sessionId, string normalizedQuestion)
     {
         var generation = GetProfileGeneration(profileId);
-        var combined = $"{profileId}:{generation}:{PromptVersion}:{normalizedQuestion}";
+        var combined = $"{profileId}:{sessionId}:{generation}:{PromptVersion}:{normalizedQuestion}";
         var hash = SHA256.HashData(Encoding.UTF8.GetBytes(combined));
         return "q:" + Convert.ToHexString(hash)[..20].ToLowerInvariant();
     }

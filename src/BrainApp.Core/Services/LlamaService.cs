@@ -25,13 +25,20 @@ public class LlamaService : IAsyncDisposable
     private readonly CacheService _cache;
     private readonly SemaphoreSlim _chatLock = new(1, 1);
     private readonly SemaphoreSlim _embedLock = new(1, 1);
+    private readonly SemaphoreSlim _rerankLock = new(1, 1);
 
     private LLamaWeights? _chatWeights;
     private LLamaWeights? _embedWeights;
+    private LLamaWeights? _rerankWeights;
     private ModelParams? _chatParams;
     private ModelParams? _embedParams;
+    private ModelParams? _rerankParams;
     private LLamaEmbedder? _embedder;
+    private LLamaReranker? _reranker;
     private bool _initialized;
+
+    /// <summary>True when a cross-encoder reranker model was loaded successfully.</summary>
+    public bool HasReranker => _reranker != null;
 
     // NativeLibraryConfig must be configured exactly once, before the first native call.
     private static int _nativeConfigured;
@@ -83,7 +90,8 @@ public class LlamaService : IAsyncDisposable
             ContextSize = (uint)_settings.ContextSize,
             GpuLayerCount = _settings.GpuLayerCount,
             Threads = (int)threadCount,
-            BatchSize = (uint)_settings.BatchSize
+            BatchSize = (uint)_settings.BatchSize,
+            UBatchSize = (uint)_settings.BatchSize
         };
 
         _embedParams = new ModelParams(embedPath)
@@ -103,9 +111,11 @@ public class LlamaService : IAsyncDisposable
         _embedWeights = await Task.Run(() => LLamaWeights.LoadFromFile(_embedParams), ct);
         _embedder = new LLamaEmbedder(_embedWeights, _embedParams);
 
+        await TryLoadRerankerAsync(ct);
+
         _initialized = true;
-        Log.Information("LLamaSharp initialized successfully. Chat layers: {Layers}, Embedding layers: {EmbedLayers}",
-            _settings.GpuLayerCount, 0);
+        Log.Information("LLamaSharp initialized successfully. Chat layers: {Layers}, Embedding layers: {EmbedLayers}, Reranker: {Reranker}",
+            _settings.GpuLayerCount, 0, HasReranker ? _settings.RerankerModelFile : "none (MMR fallback)");
     }
 
     /// <summary>
@@ -148,6 +158,72 @@ public class LlamaService : IAsyncDisposable
     }
 
     /// <summary>
+    /// Load the cross-encoder reranker model if one is configured and present on disk.
+    /// Failure (missing file, unsupported model) is non-fatal — callers fall back to MMR.
+    /// </summary>
+    private async Task TryLoadRerankerAsync(CancellationToken ct)
+    {
+        var path = _settings.GetResolvedRerankerModelPath(_storageSettings);
+        if (string.IsNullOrEmpty(path))
+            return;
+
+        if (!File.Exists(path))
+        {
+            Log.Warning("Reranker model '{File}' not found at {Path} — using MMR fallback for chunk selection.",
+                _settings.RerankerModelFile, path);
+            return;
+        }
+
+        try
+        {
+            _rerankParams = new ModelParams(path)
+            {
+                ContextSize = 8192,
+                BatchSize = 512,
+                UBatchSize = 512,
+                GpuLayerCount = 0, // keep GPU free for the chat model
+                PoolingType = LLama.Native.LLamaPoolingType.Rank
+            };
+            _rerankWeights = await Task.Run(() => LLamaWeights.LoadFromFile(_rerankParams), ct);
+            _reranker = new LLamaReranker(_rerankWeights, _rerankParams);
+            Log.Information("Reranker model loaded: {File}", _settings.RerankerModelFile);
+        }
+        catch (Exception ex)
+        {
+            Log.Warning(ex, "Failed to load reranker model '{File}' — using MMR fallback.", _settings.RerankerModelFile);
+            _rerankWeights?.Dispose();
+            _rerankWeights = null;
+            _reranker = null;
+        }
+    }
+
+    /// <summary>
+    /// Cross-encoder relevance scores for (query, document) pairs, in document order,
+    /// normalized to (0, 1). Returns null if no reranker is loaded so the caller can
+    /// fall back to MMR. Scores are not cached: they depend on the (query, doc) pair.
+    /// </summary>
+    public async Task<IReadOnlyList<float>?> RerankAsync(string query, IReadOnlyList<string> documents, CancellationToken ct = default)
+    {
+        if (_reranker == null || documents.Count == 0)
+            return null;
+
+        await _rerankLock.WaitAsync(ct);
+        try
+        {
+            return await _reranker.GetRelevanceScores(query, documents, normalize: true, ct);
+        }
+        catch (Exception ex)
+        {
+            Log.Warning(ex, "Reranking failed — caller will fall back to original ordering / MMR.");
+            return null;
+        }
+        finally
+        {
+            _rerankLock.Release();
+        }
+    }
+
+    /// <summary>
     /// Non-streaming chat — sends full prompt and waits for complete response.
     /// </summary>
     public async Task<string> ChatAsync(
@@ -173,8 +249,17 @@ public class LlamaService : IAsyncDisposable
             var prompt = BuildChatPrompt(systemPrompt, history, userMessage);
             var sb = new StringBuilder();
 
-            await foreach (var token in executor.InferAsync(prompt, inferParams, ct))
-                sb.Append(token);
+            try
+            {
+                await foreach (var token in executor.InferAsync(prompt, inferParams, ct))
+                    sb.Append(token);
+            }
+            catch (LLama.Exceptions.LLamaDecodeError ex) when (ex.Message.Contains("NoKvSlot", StringComparison.OrdinalIgnoreCase))
+            {
+                Log.Error(ex, "llama_decode failed with NoKvSlot — prompt exceeded KV cache capacity");
+                throw new InvalidOperationException(
+                    "Prompt too large for context window — try shortening the question or starting a new session.", ex);
+            }
 
             return CleanOutput(sb.ToString());
         }
@@ -208,8 +293,31 @@ public class LlamaService : IAsyncDisposable
             };
 
             var prompt = BuildChatPrompt(systemPrompt, history, userMessage);
-            await foreach (var token in executor.InferAsync(prompt, inferParams, ct))
-                yield return token;
+            var enumerator = executor.InferAsync(prompt, inferParams, ct).GetAsyncEnumerator(ct);
+            try
+            {
+                while (true)
+                {
+                    string? token = null;
+                    try
+                    {
+                        if (!await enumerator.MoveNextAsync())
+                            break;
+                        token = enumerator.Current;
+                    }
+                    catch (LLama.Exceptions.LLamaDecodeError ex) when (ex.Message.Contains("NoKvSlot", StringComparison.OrdinalIgnoreCase))
+                    {
+                        Log.Error(ex, "llama_decode failed with NoKvSlot — prompt exceeded KV cache capacity");
+                        throw new InvalidOperationException(
+                            "Prompt too large for context window — try shortening the question or starting a new session.", ex);
+                    }
+                    yield return token!;
+                }
+            }
+            finally
+            {
+                await enumerator.DisposeAsync();
+            }
         }
         finally
         {
@@ -479,6 +587,10 @@ public class LlamaService : IAsyncDisposable
         // Dispose existing weights
         _embedder?.Dispose();
         _embedder = null;
+        _reranker?.Dispose();
+        _reranker = null;
+        _rerankWeights?.Dispose();
+        _rerankWeights = null;
         _chatWeights?.Dispose();
         _chatWeights = null;
         _embedWeights?.Dispose();
@@ -502,10 +614,13 @@ public class LlamaService : IAsyncDisposable
     public async ValueTask DisposeAsync()
     {
         _embedder?.Dispose();
+        _reranker?.Dispose();
+        _rerankWeights?.Dispose();
         _chatWeights?.Dispose();
         _embedWeights?.Dispose();
         _chatLock.Dispose();
         _embedLock.Dispose();
+        _rerankLock.Dispose();
         await Task.CompletedTask;
     }
 }

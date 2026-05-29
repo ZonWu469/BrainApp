@@ -19,6 +19,11 @@ public class ProfileSkillRow
 /// </summary>
 public class ProfileRepository : IDisposable
 {
+    public const string LastSelectedProfileKey = "last_selected_profile_id";
+
+    public static string ActiveSessionKey(string profileId) => $"active_session:{profileId}";
+    public static string EmbeddingModelKey(string profileId) => $"embedding_model:{profileId}";
+
     private readonly string _dbPath;
     private SqliteConnection? _connection;
 
@@ -140,6 +145,11 @@ public class ProfileRepository : IDisposable
             );
 
             CREATE INDEX IF NOT EXISTS idx_profile_skills_profile ON profile_skills(profile_id);
+
+            CREATE TABLE IF NOT EXISTS app_state (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
         ";
         cmd.ExecuteNonQuery();
 
@@ -407,6 +417,86 @@ public class ProfileRepository : IDisposable
         }
     }
 
+    // ==================== APP STATE ====================
+
+    public string? GetAppState(string key)
+    {
+        lock (_dbLock)
+        {
+            using var cmd = _connection!.CreateCommand();
+            cmd.CommandText = "SELECT value FROM app_state WHERE key = @key";
+            cmd.Parameters.AddWithValue("@key", key);
+            var result = cmd.ExecuteScalar();
+            return result == null || result == DBNull.Value ? null : (string)result;
+        }
+    }
+
+    public void SetAppState(string key, string value)
+    {
+        lock (_dbLock)
+        {
+            using var cmd = _connection!.CreateCommand();
+            cmd.CommandText = "INSERT OR REPLACE INTO app_state (key, value) VALUES (@key, @value)";
+            cmd.Parameters.AddWithValue("@key", key);
+            cmd.Parameters.AddWithValue("@value", value);
+            cmd.ExecuteNonQuery();
+        }
+    }
+
+    public string? GetLastSelectedProfileId() => GetAppState(LastSelectedProfileKey);
+
+    public void SetLastSelectedProfileId(string profileId) =>
+        SetAppState(LastSelectedProfileKey, profileId);
+
+    public string? GetActiveSessionId(string profileId) =>
+        GetAppState(ActiveSessionKey(profileId));
+
+    public void SetActiveSessionId(string profileId, string sessionId) =>
+        SetAppState(ActiveSessionKey(profileId), sessionId);
+
+    public string? GetProfileEmbeddingModel(string profileId) =>
+        GetAppState(EmbeddingModelKey(profileId));
+
+    public void SetProfileEmbeddingModel(string profileId, string embeddingModelFile) =>
+        SetAppState(EmbeddingModelKey(profileId), embeddingModelFile);
+
+    /// <summary>Most recent session that has at least one message (skips empty "New chat" orphans).</summary>
+    public ChatSession? GetLatestSessionWithMessages(string profileId)
+    {
+        using var cmd = _connection!.CreateCommand();
+        cmd.CommandText = @"
+            SELECT s.* FROM sessions s
+            WHERE s.profile_id = @profileId
+              AND EXISTS (SELECT 1 FROM messages m WHERE m.session_id = s.id)
+            ORDER BY s.updated_at DESC
+            LIMIT 1";
+        cmd.Parameters.AddWithValue("@profileId", profileId);
+
+        using var reader = cmd.ExecuteReader();
+        if (!reader.Read())
+            return null;
+
+        var session = ReadSession(reader);
+        session.Messages = GetMessages(session.Id);
+        return session;
+    }
+
+    public void DeleteEmptySessions(string profileId)
+    {
+        lock (_dbLock)
+        {
+            using var cmd = _connection!.CreateCommand();
+            cmd.CommandText = @"
+                DELETE FROM sessions
+                WHERE profile_id = @profileId
+                  AND id NOT IN (SELECT DISTINCT session_id FROM messages)";
+            cmd.Parameters.AddWithValue("@profileId", profileId);
+            var deleted = cmd.ExecuteNonQuery();
+            if (deleted > 0)
+                Log.Debug("Removed {Count} empty session(s) for profile {ProfileId}", deleted, profileId);
+        }
+    }
+
     // ==================== SESSION CRUD ====================
 
     public List<ChatSession> GetSessionHistory(string profileId, int limit = 20)
@@ -601,6 +691,17 @@ public class ProfileRepository : IDisposable
                 chunks.Add(ReadChunk(reader));
             }
             return chunks;
+        }
+    }
+
+    public int GetChunkCountByProfile(string profileId)
+    {
+        lock (_dbLock)
+        {
+            using var cmd = _connection!.CreateCommand();
+            cmd.CommandText = "SELECT COUNT(*) FROM chunks WHERE profile_id = @profileId";
+            cmd.Parameters.AddWithValue("@profileId", profileId);
+            return Convert.ToInt32(cmd.ExecuteScalar());
         }
     }
 

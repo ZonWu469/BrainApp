@@ -66,7 +66,7 @@ public class CacheServiceTests
     public void GetAnswer_Miss_ReturnsNull()
     {
         var svc = CreateService();
-        var result = svc.GetAnswer("profile1", "what is this");
+        var result = svc.GetAnswer("profile1", "session1", "what is this");
         Assert.Null(result);
     }
 
@@ -74,12 +74,35 @@ public class CacheServiceTests
     public void GetAnswer_Hit_ReturnsCachedAnswer()
     {
         var svc = CreateService();
-        svc.SetAnswer("profile1", "what is this", "cached answer");
+        svc.SetAnswer("profile1", "session1", "what is this", "cached answer");
 
-        var result = svc.GetAnswer("profile1", "what is this");
+        var result = svc.GetAnswer("profile1", "session1", "what is this");
 
         Assert.NotNull(result);
         Assert.Equal("cached answer", result);
+    }
+
+    [Fact]
+    public void GetAnswer_DifferentSession_ReturnsMiss()
+    {
+        // A new chat in the same profile must NOT see another chat's cached answer.
+        var svc = CreateService();
+        svc.SetAnswer("profile1", "session1", "what is this", "cached answer");
+
+        var result = svc.GetAnswer("profile1", "session2", "what is this");
+
+        Assert.Null(result);
+    }
+
+    [Fact]
+    public void GetAnswer_DifferentProfile_ReturnsMiss()
+    {
+        var svc = CreateService();
+        svc.SetAnswer("profile1", "session1", "what is this", "cached answer");
+
+        var result = svc.GetAnswer("profile2", "session1", "what is this");
+
+        Assert.Null(result);
     }
 
     [Fact]
@@ -87,16 +110,28 @@ public class CacheServiceTests
     {
         var svc = CreateService();
 
-        // Cache an answer for profile1
-        svc.SetAnswer("profile1", "question", "answer1");
-        Assert.Equal("answer1", svc.GetAnswer("profile1", "question"));
+        svc.SetAnswer("profile1", "session1", "question", "answer1");
+        Assert.Equal("answer1", svc.GetAnswer("profile1", "session1", "question"));
 
-        // Invalidate the profile
         svc.InvalidateProfile("profile1");
 
-        // Should be unreachable now (different generation)
-        var result = svc.GetAnswer("profile1", "question");
+        var result = svc.GetAnswer("profile1", "session1", "question");
         Assert.Null(result);
+    }
+
+    [Fact]
+    public void InvalidateProfile_InvalidatesAllSessionsOfThatProfile()
+    {
+        var svc = CreateService();
+        svc.SetAnswer("profile1", "session1", "question", "answer-A");
+        svc.SetAnswer("profile1", "session2", "question", "answer-B");
+        svc.SetAnswer("profile2", "session1", "question", "answer-C");
+
+        svc.InvalidateProfile("profile1");
+
+        Assert.Null(svc.GetAnswer("profile1", "session1", "question"));
+        Assert.Null(svc.GetAnswer("profile1", "session2", "question"));
+        Assert.Equal("answer-C", svc.GetAnswer("profile2", "session1", "question"));
     }
 
     [Fact]
@@ -136,7 +171,7 @@ public class CacheServiceTests
 
         svc.SetEmbedding("text1", new float[] { 0.1f });
         svc.SetEmbedding("text2", new float[] { 0.2f });
-        svc.SetAnswer("p1", "q1", "a1");
+        svc.SetAnswer("p1", "s1", "q1", "a1");
         svc.GetProfileGeneration("p1");
         svc.GetProfileGeneration("p2");
 
@@ -165,8 +200,8 @@ public class CacheServiceTests
         var settings = new CacheSettings { EnableQueryCache = false };
         var svc = CreateService(settings);
 
-        svc.SetAnswer("p1", "q1", "a1");
-        var result = svc.GetAnswer("p1", "q1");
+        svc.SetAnswer("p1", "s1", "q1", "a1");
+        var result = svc.GetAnswer("p1", "s1", "q1");
 
         Assert.Null(result);
     }

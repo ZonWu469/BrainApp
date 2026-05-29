@@ -10,7 +10,9 @@
       "Bash(Get-ChildItem -Path \"c:\\\\Users\\\\dbagn\\\\Desktop\\\\Progetti\\\\BrainAppGit\" -Directory)",
       "Bash(Select-Object Name)",
       "Bash(Get-ChildItem -Recurse -Filter \"*.xaml\" \"c:\\\\Users\\\\dbagn\\\\Desktop\\\\Progetti\\\\BrainAppGit\")",
-      "Bash(Select-Object FullName)"
+      "Bash(Select-Object FullName)",
+      "PowerShell(dotnet build BrainApp.sln -nologo -v q 2>&1)",
+      "Read(//c/Users/dbagn/.nuget/packages/llamasharp/**)"
     ],
     "additionalDirectories": [
       "C:\\Users\\dbagn\\Desktop\\Progetti\\BrainAppGit"

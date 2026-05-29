@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.IO;
 using Microsoft.Extensions.Configuration;
 
@@ -19,6 +19,8 @@ public class LlamaSettings
     public string ModelsFolder { get; set; } = "models";
     public string ChatModelFile { get; set; } = "Qwen3-1.7B-Q8_0.gguf";
     public string EmbeddingModelFile { get; set; } = "nomic-embed-text-v1.5.Q4_K_M.gguf";
+    /// <summary>Cross-encoder reranker GGUF (e.g. bge-reranker-v2-m3). Empty or missing file ⇒ MMR fallback.</summary>
+    public string RerankerModelFile { get; set; } = "";
     public int ContextSize { get; set; } = 16384;
     public int GpuLayerCount { get; set; } = 99;
     public int Threads { get; set; } = 0;
@@ -27,6 +29,15 @@ public class LlamaSettings
     public int MaxTokens { get; set; } = 1024;
     public List<string> AntiPrompts { get; set; } = new() { "<|end|>", "<|endoftext|>", "<|im_end|>" };
     public ChatTemplate ChatTemplate { get; set; } = ChatTemplate.Qwen;
+
+    // Context-shaping knobs (see ChatService.ShapeContext / TrimToBudget).
+    public double MinChunkScore { get; set; } = 0.18;
+    public double ScoreDropoffRatio { get; set; } = 0.4;
+    public int MaxChunkTokens { get; set; } = 512;
+    public int HistoryTokenBudget { get; set; } = 2000;
+    public int SafetyMargin { get; set; } = 256;
+    /// <summary>Minimum tokens reserved for RAG document context when chunks exist.</summary>
+    public int RagTokenBudget { get; set; } = 3500;
 
     public string GetResolvedModelsFolder(StorageSettings storage)
     {
@@ -51,6 +62,12 @@ public class LlamaSettings
 
     public string GetResolvedEmbeddingModelPath(StorageSettings storage) =>
         Path.Combine(GetResolvedModelsFolder(storage), EmbeddingModelFile);
+
+    /// <summary>Resolved reranker model path, or empty string if no reranker is configured.</summary>
+    public string GetResolvedRerankerModelPath(StorageSettings storage) =>
+        string.IsNullOrWhiteSpace(RerankerModelFile)
+            ? string.Empty
+            : Path.Combine(GetResolvedModelsFolder(storage), RerankerModelFile);
 }
 
 public enum ChatTemplate { Qwen, Llama3, Phi3, Gemma, Mistral, ChatML }
@@ -75,6 +92,13 @@ public class RetrievalSettings
     public double KeywordWeight { get; set; } = 0.3;
     public double MinRelevanceScore { get; set; } = 0.1;
     public string OcrLanguages { get; set; } = "eng+ita";
+
+    /// <summary>Re-rank the TopK candidates with a cross-encoder (or MMR fallback) and keep RerankTopN.</summary>
+    public bool EnableReranker { get; set; } = true;
+    /// <summary>Number of chunks to keep after reranking — fed to the chat model.</summary>
+    public int RerankTopN { get; set; } = 6;
+    /// <summary>Rewrite/expand the query with the chat model before retrieval (adds latency; off by default).</summary>
+    public bool EnableQueryExpansion { get; set; } = false;
 }
 
 public class StorageSettings

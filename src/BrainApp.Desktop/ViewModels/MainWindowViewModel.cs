@@ -75,8 +75,14 @@ public partial class MainWindowViewModel : ObservableObject
     {
         var profiles = _profileRepo.GetAllProfiles();
         Profiles = new ObservableCollection<Profile>(profiles);
-        if (Profiles.Count > 0 && SelectedProfile == null)
-            SelectedProfile = Profiles[0];
+        if (Profiles.Count == 0 || SelectedProfile != null)
+            return;
+
+        var lastId = _profileRepo.GetLastSelectedProfileId();
+        var restore = !string.IsNullOrEmpty(lastId)
+            ? Profiles.FirstOrDefault(p => p.Id == lastId)
+            : null;
+        SelectedProfile = restore ?? Profiles[0];
     }
 
     private void UpdateModelStatus()
@@ -109,6 +115,8 @@ public partial class MainWindowViewModel : ObservableObject
         if (value == null)
             return;
 
+        _profileRepo.SetLastSelectedProfileId(value.Id);
+
         // Load the index off the UI thread — for profiles with many chunks the SQLite read
         // and embedding-BLOB deserialization can take a noticeable amount of time. The
         // progress bar bound to IsProfileLoading gives the user feedback while it runs.
@@ -123,6 +131,15 @@ public partial class MainWindowViewModel : ObservableObject
             try
             {
                 await _retrieval.LoadIndexAsync(profile.Id, appDataFolder);
+                var memChunks = _retrieval.GetChunkCount(profile.Id);
+                var docs = _profileRepo.GetDocuments(profile.Id);
+                var docChunkSum = docs.Sum(d => d.ChunkCount);
+                if (docChunkSum > 0 && memChunks == 0)
+                {
+                    Serilog.Log.Warning(
+                        "Profile {ProfileId}: documents report {DocChunks} chunks but retrieval index is empty",
+                        profile.Id, docChunkSum);
+                }
             }
             finally
             {
@@ -176,6 +193,13 @@ public partial class MainWindowViewModel : ObservableObject
     private void CloseSettings()
     {
         IsSettingsOpen = false;
+    }
+
+    public void PersistUiState()
+    {
+        if (SelectedProfile != null)
+            _profileRepo.SetLastSelectedProfileId(SelectedProfile.Id);
+        ChatViewModel?.PersistUiState();
     }
 
     public void UpdateModelStatusFromHealth(HealthStatus health)

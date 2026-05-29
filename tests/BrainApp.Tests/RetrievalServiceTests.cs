@@ -1,4 +1,4 @@
-using Microsoft.Extensions.Options;
+﻿using Microsoft.Extensions.Options;
 using Xunit;
 using Moq;
 using BrainApp.Core.Config;
@@ -16,7 +16,7 @@ public class RetrievalServiceTests
     {
         var retrievalOpts = Options.Create(settings ?? new RetrievalSettings
         {
-            TopK = 6,
+            TopK = 12,
             ChunkSize = 800,
             ChunkOverlap = 120,
             MinChunkLength = 60,
@@ -85,7 +85,13 @@ public class RetrievalServiceTests
             Status = DocumentStatus.Ready
         });
 
-        return new RetrievalService(llamaService, cacheService, profileRepo, retrievalOpts);
+        return new RetrievalService(
+            llamaService,
+            cacheService,
+            profileRepo,
+            retrievalOpts,
+            Options.Create(new StorageSettings { AppDataFolder = tempDbFolder }),
+            llamaSettings);
     }
 
     [Fact]
@@ -219,6 +225,81 @@ public class RetrievalServiceTests
         var result = svc.GetChunkCount("nonexistent");
 
         Assert.Equal(0, result);
+    }
+
+    private static DocumentChunk Chunk(string id, string text, float[] emb) => new()
+    {
+        Id = id, ProfileId = "p", DocumentId = "d", FileName = "f.txt",
+        Text = text, ChunkIndex = 0, PageNumber = 1, Embedding = emb
+    };
+
+    [Fact]
+    public void Tokenize_DropsStopwordsAndDiacritics()
+    {
+        var tokens = RetrievalService.Tokenize("Qual è la POLIZZA assicurativa più adatta?");
+
+        Assert.Contains("polizza", tokens);
+        Assert.Contains("assicurativa", tokens);
+        Assert.Contains("adatta", tokens);
+        Assert.Contains("piu", tokens);          // "più" -> "piu" (diacritics folded; not a stopword token)
+        Assert.DoesNotContain("la", tokens);     // stopword removed
+        Assert.DoesNotContain("è", tokens);       // length 1 after fold -> dropped
+    }
+
+    [Fact]
+    public void KeywordScore_RareTermOutweighsCommonTerm()
+    {
+        // "report" appears in every chunk (common, low IDF); "fotosintesi" is rare (high IDF).
+        var corpus = new List<DocumentChunk>
+        {
+            Chunk("1", "report report report", Array.Empty<float>()),
+            Chunk("2", "report annuale vendite", Array.Empty<float>()),
+            Chunk("3", "report sulla fotosintesi clorofilliana", Array.Empty<float>()),
+        };
+        var idf = RetrievalService.BuildIdf(corpus);
+
+        var query = RetrievalService.Tokenize("report fotosintesi");
+        double rareMatch = RetrievalService.CalculateKeywordScore(query, RetrievalService.Tokenize(corpus[2].Text), idf);
+        double commonMatch = RetrievalService.CalculateKeywordScore(query, RetrievalService.Tokenize(corpus[1].Text), idf);
+
+        // The chunk matching the rare term should score higher than one matching only the common term.
+        Assert.True(rareMatch > commonMatch, $"rare={rareMatch} should exceed common={commonMatch}");
+    }
+
+    [Fact]
+    public void SelectMmr_KeepsTopRelevanceAndDropsNearDuplicate()
+    {
+        var a = new[] { 1f, 0f };          // top relevance, unique direction
+        var dupOfA = new[] { 1f, 0f };     // near-duplicate of A
+        var b = new[] { 0f, 1f };          // lower relevance but diverse
+        var cands = new List<RetrievedChunk>
+        {
+            new() { Chunk = Chunk("A", "a", a),       Score = 0.90 },
+            new() { Chunk = Chunk("Adup", "adup", dupOfA), Score = 0.80 },
+            new() { Chunk = Chunk("B", "b", b),       Score = 0.70 },
+        };
+
+        var picked = RetrievalService.SelectMmr(cands, 2);
+        var ids = picked.Select(p => p.Chunk.Id).ToList();
+
+        Assert.Contains("A", ids);     // highest relevance always kept
+        Assert.Contains("B", ids);     // diverse chunk preferred over the near-duplicate
+        Assert.DoesNotContain("Adup", ids);
+    }
+
+    [Fact]
+    public void ReorderForEdges_PlacesTopChunksAtStartAndEnd()
+    {
+        // Input is sorted by relevance, best first.
+        var sorted = Enumerable.Range(0, 5)
+            .Select(i => new RetrievedChunk { Chunk = Chunk($"c{i}", $"t{i}", Array.Empty<float>()), Score = 1.0 - i * 0.1 })
+            .ToList();
+
+        var ordered = ChatService.ReorderForEdges(sorted);
+
+        Assert.Equal("c0", ordered.First().Chunk.Id);  // most relevant first
+        Assert.Equal("c1", ordered.Last().Chunk.Id);   // second-most relevant last
+        Assert.Equal(5, ordered.Count);
     }
 
     [Fact]
